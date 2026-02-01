@@ -1,0 +1,11 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+#Data files (We usually don't track huge CSVs)
+*.csv
+*.png
+
+#OS generated files
+.DS_store
+.env
