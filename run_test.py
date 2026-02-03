@@ -1,6 +1,7 @@
 import asyncio
 from src.collectors.binance_ws import BinanceController
 import json
+import polars as pl
 
 async def main():
     collector = BinanceController(symbol="BTC/USDT")
@@ -14,9 +15,12 @@ async def main():
             # orderbook = await collector.client.watch_order_book(collector.symbol)
             # print(type(orderbook['timestamp']))
             # print(f"bids: {orderbook['bids'][0]} | asks: {orderbook['asks'][0]} | timestamp: {orderbook['timestamp']} | datetime: {orderbook['datetime']} | nonce: {orderbook['nonce']} | symbol: {orderbook['symbol']}")
-            trades = await collector.client.watch_trades(collector.symbol)
-            print(trades[0].keys())
-            print(trades[0])
+            # trades = await collector.client.watch_trades(collector.symbol)
+            # print(trades[0].keys())
+            # print(trades[0])
+            df = pl.read_parquet('data/raw/Binance/spot/BTC-USDT/trades/2026/02/03/20260203_14_trade.parquet')
+            print(df.head(3))
+            
         except Exception as e:
             print(f"error: {e}")
         finally:

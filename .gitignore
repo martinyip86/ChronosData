@@ -5,6 +5,7 @@ __pycache__/
 #Data files (We usually don't track huge CSVs)
 *.csv
 *.png
+*.parquet
 
 #OS generated files
 .DS_store

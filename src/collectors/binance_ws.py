@@ -3,7 +3,7 @@ import ccxt.pro as ccxt
 import asyncio
 import time
 import os
-from datetime import datetime
+from datetime import datetime,timezone
 from src.collectors.base import BaseController
 from src.models.schema import TickData,TradeData
 
@@ -78,19 +78,33 @@ class BinanceController(BaseController):
                         if not buffer: continue
                         df = pl.DataFrame(buffer)
                         file_path = self.get_save_path(exchange=self.exchange_id,symbol=self.symbol,data_type=dtype)
-                        df.write_parquet(file_path)
+                        if os.path.exists(file_path):
+                            exist_df = pl.read_parquet(file_path)
+                            commbine_df = pl.concat([exist_df,df]).unique().sort('timestamp')
+                            commbine_df.write_parquet(file_path)
+                        else:
+                            df.write_parquet(file_path)
                         buffers[dtype] = []
                     last_time = time.time()
             except Exception as e:
                 print(f"storage error: {e}")
 
     def get_save_path(self,exchange:str,symbol:str,data_type:str,market_type='spot'):
-        clear_symbol = symbol.replace('/','_').replace(':','_')
-        now = datetime.now()
-        file_dir = f"data/raw/{exchange}/{market_type}/{clear_symbol}/{data_type}/{now.strftime('%Y-%m')}/{now.strftime('%d')}"
+        clear_symbol = symbol.replace('/','-').replace(':','-')
+        now = datetime.now(timezone.utc)
+        file_dir = os.path.join(
+            "data/raw",
+            exchange,
+            market_type,
+            clear_symbol,
+            data_type,
+            now.strftime('%Y'),
+            now.strftime('%m'),
+            now.strftime('%d')
+        )
         os.makedirs(file_dir,exist_ok=True)
         data_name =  'ob' if data_type == 'orderbook' else 'trade'
-        file_name = f"{now.strftime('%H_%M_%S')}_{data_name}.parquet"
+        file_name = f"{now.strftime('%Y%m%d_%H')}_{data_name}.parquet"
         return os.path.join(file_dir,file_name)
 
     async def stop(self):

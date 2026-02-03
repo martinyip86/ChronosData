@@ -1,0 +1,33 @@
+# --- 基础架构与配置 ---
+pydantic
+pydantic-settings
+pyyaml
+python-dotenv
+loguru
+
+# --- 交易所与网络 ---
+ccxt
+requests
+fastapi
+uvicorn[standard]
+prometheus-fastapi-instrumentator
+
+# --- 数据科学与高性能计算 (QR 的核心) ---
+pandas
+polars
+pyarrow
+numpy
+numba
+scipy
+
+# --- 统计与机器学习 ---
+scikit-learn
+statsmodels
+
+# --- 可视化 ---
+matplotlib
+plotly
+
+# --- 数据库 (备选) ---
+# sqlalchemy
+# aiosqlite

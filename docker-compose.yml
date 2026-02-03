@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  # 这里的 collector 是你的服务名称
+  collector:
+    build: .                # 告诉它去当前目录找 Dockerfile 构建镜像
+    container_name: btc_collector
+    restart: always         # 关键：程序崩溃或交易所断线导致退出时，自动重启
+
+    # 环境变量管理
+    env_file:
+      - .env                # 自动加载你的 API Key 等敏感信息
+
+    # 数据持久化（非常重要！）
+    volumes:
+      - ./data:/app/data    # 把容器内的 /app/data 映射到你电脑的 ./data 文件夹
+      - ./logs:/app/logs    # 映射日志，方便排查
+
+    # 资源限制（防止 Polars 瞬间吃光服务器内存）
+    deploy:
+      resources:
+        limits:
+          memory: 2G

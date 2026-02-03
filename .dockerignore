@@ -1,0 +1,31 @@
+# 数据与日志
+/data
+/logs
+
+# 敏感文件
+.env
+
+#Python 缓存与虚拟环境
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# 开发工具与 Notebook
+.ipynb_checkpoints/
+.vscode/
+.idea/
+*.ipynb
+
+# 版本控制
+.git
+.gitignore
+
+# Docker 自身配置文件
+Dockerfile
+docker-compose.yml
+.dockerignore
