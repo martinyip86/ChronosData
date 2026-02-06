@@ -59,6 +59,12 @@ class BinanceController(BaseController):
                 print(f"Trade error: {e}")
                 await asyncio.sleep(5)
 
+    async def _fetch_trades(self):
+        trades_list = await self.client.fetch_trades(self.symbol,since=1770186109334,limit=1000)
+        for trade_dict in trades_list:
+            trade = TradeData.from_ccxt(trade_dict,self.exchange_id)
+            await self.queue.put(trade)
+
     async def storage_worker(self):
         buffers = {'orderbook':[],'trades':[]}
         save_interval = 10
@@ -81,9 +87,9 @@ class BinanceController(BaseController):
                         if os.path.exists(file_path):
                             exist_df = pl.read_parquet(file_path)
                             commbine_df = pl.concat([exist_df,df]).unique().sort('timestamp')
-                            commbine_df.write_parquet(file_path)
+                            commbine_df.write_parquet(file_path,compression="snappy")
                         else:
-                            df.write_parquet(file_path)
+                            df.write_parquet(file_path,compression='snappy')
                         buffers[dtype] = []
                     last_time = time.time()
             except Exception as e:
