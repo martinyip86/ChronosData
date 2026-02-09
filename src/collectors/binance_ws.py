@@ -6,6 +6,7 @@ import os
 from datetime import datetime,timezone
 from src.collectors.base import BaseController
 from src.models.schema import TickData,TradeData
+from src.utils.logger import logger
 
 class BinanceController(BaseController):
     def __init__(self,symbol:str):
@@ -18,6 +19,7 @@ class BinanceController(BaseController):
     async def connect(self):
         self.is_running = True
         print(f"Connected to {self.exchange_id} for {self.symbol}")
+        logger.info(f"🟢 [WS-CONNECT] Connected Established | exchange: {self.exchange_id} | symbol: {self.symbol}")
 
     async def fetch_data(self):
         await asyncio.gather(
@@ -26,6 +28,7 @@ class BinanceController(BaseController):
         )
 
     async def _watch_orderbook(self):
+        logger.info(f"📡 Start Orderbook Listener Thread: {self.symbol}")
         while self.is_running:
             try:
                 orderbook = await self.client.watch_order_book(self.symbol)
@@ -46,9 +49,11 @@ class BinanceController(BaseController):
                 await self.queue.put(tick)
             except Exception as e:
                 print(f"Orderbook Error: {e}")
+                logger.error(f"🚨 [OB-ERROR] {self.symbol} listener Exception: {e}")
                 await asyncio.sleep(5)
 
     async def _watch_trades(self):
+        logger.info(f"📡 Start Trades Listener Thread: {self.symbol}")
         while self.is_running:
             try:
                 trades_list = await self.client.watch_trades(self.symbol)
@@ -56,7 +61,7 @@ class BinanceController(BaseController):
                    trade = TradeData.from_ccxt(trade_dict,self.exchange_id)
                    await self.queue.put(trade)
             except Exception as e:
-                print(f"Trade error: {e}")
+                logger.error(f"🚨 [TD-ERROR] {self.symbol} listener Exception: {e}")
                 await asyncio.sleep(5)
 
     async def _fetch_trades(self):
@@ -66,6 +71,7 @@ class BinanceController(BaseController):
             await self.queue.put(trade)
 
     async def storage_worker(self):
+        logger.info(f"💾 Storage Worker started | Reflash range: 10s")
         buffers = {'orderbook':[],'trades':[]}
         save_interval = 10
         last_time = time.time()
@@ -82,6 +88,7 @@ class BinanceController(BaseController):
                 if (time.time() - last_time) > save_interval:
                     for dtype,buffer in buffers.items():
                         if not buffer: continue
+                        
                         df = pl.DataFrame(buffer)
                         file_path = self.get_save_path(exchange=self.exchange_id,symbol=self.symbol,data_type=dtype)
                         if os.path.exists(file_path):
@@ -90,10 +97,13 @@ class BinanceController(BaseController):
                             commbine_df.write_parquet(file_path,compression="snappy")
                         else:
                             df.write_parquet(file_path,compression='snappy')
+
+                        start_save = time.time()
+                        logger.info(f"✅ [SAVE] {self.symbol} | Type: {dtype} | Writed: {len(buffer)} | Elapsed time: {time.time()-start_save:.2f}s")
                         buffers[dtype] = []
                     last_time = time.time()
             except Exception as e:
-                print(f"storage error: {e}")
+                logger.error(f"❌ [STORAGE-CRITICAL] {self.symbol} save failed: {e}")
 
     def get_save_path(self,exchange:str,symbol:str,data_type:str,market_type='spot'):
         clear_symbol = symbol.replace('/','-').replace(':','-')

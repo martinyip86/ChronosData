@@ -7,28 +7,30 @@ import requests
 import zipfile
 import io
 from datetime import datetime,timedelta,timezone
+from src.utils.logger import logger
 
 CSV_PATH = None
-DATE_STR = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
 
-def main():
-    dt_obj = datetime.strptime(DATE_STR,"%Y-%m-%d")
+def main(target_date=None):
+    date_str = target_date or (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+    dt_obj = datetime.strptime(date_str,"%Y-%m-%d")
     data_path = f"data/raw/Binance/spot/BTC-USDT/trades/{dt_obj.strftime('%Y/%m/%d')}/*.parquet"
     files = sorted(glob.glob(data_path))
 
+    logger.info(f"🔍Start sacnning local data | Date: {date_str} | path partern: {data_path}")
+
     if not files:
-        print("未找到数据")
+        logger.warning(f"⚠️Local parquet data not found,check if the collector is running normally,please.")
     else:
         lf = pl.scan_parquet(files)
         report = lf.select([
             pl.len().alias('Total raw'),
-            pl.col('timestamp').min().alias('起始时间'),
-            pl.col('timestamp').max().alias('最后时间'),
-            (pl.col('price').max() - pl.col('price').min()).alias('价格波动范围'),
-            pl.col('amount').sum().alias('总成交量')
+            pl.col('timestamp').min().alias('Start time'),
+            pl.col('timestamp').max().alias('Last time'),
+            (pl.col('price').max() - pl.col('price').min()).alias('Price fluktuation range'),
+            pl.col('amount').sum().alias('Total trading volume')
         ]).collect()
-        print("采集数据总体报告")
-        print(report)
+        logger.info(f"📊 Data overview: total row={report['Total raw'][0]} | Time span: {report['Start time'][0]} ~ {report['Last time'][0]}")
 
         gaps = lf.with_columns(pl.col('trade_id').cast(pl.Int64)).sort('trade_id').select([
             pl.col('trade_id').shift(1).alias('before_gap_id'),
@@ -41,9 +43,9 @@ def main():
         ]).collect()
 
         if len(gaps) > 0:
-            print(f"断档总数: {len(gaps)},最大断档市场{gaps['diff'].max() / 1000}")
-            print(gaps)
-            if download_and_unzip(DATE_STR):
+            max_diff = gaps['diff'].max()
+            logger.error(f"🚨 Severe data gaps detected! Total gaps: {len(gaps)} | Max ID jump{max_diff}")
+            if download_and_unzip(date_str):
                 official_df = pl.read_csv(CSV_PATH,has_header=False,new_columns=["trade_id","price","amount","cost","timestamp","is_maker","is_best"])
                 for row in gaps.iter_rows(named=True):
                     parquet_path = os.path.join(
@@ -59,7 +61,7 @@ def main():
                 print("下载失败")        
 
         else:
-            print("\n完美")
+            logger.info("✅ Perfect! Local data matches trade_id sequence,no remedy required.")
 
 def patch_gap(symbol,start_id,end_id,parquet_path,official_df):
     if not os.path.exists(parquet_path):
@@ -94,13 +96,15 @@ def download_and_unzip(date_str):
         CSV_PATH = file_path
         return True
     
-    print(f"正在下载 {date_str} 的官方补丁...")
+    logger.info(f"🌐 Rquesting a patch from binance")
+    start_time = time.time()
     try:
         r = requests.get(url)
         if r.status_code == 200:
             z = zipfile.ZipFile(io.BytesIO(r.content))
             z.extractall("temp/")
             print("解压完成！")
+            logger.info(f"📦 Download and zip confirmed. | Elapsed time: {time.time() - start_time:.2f}s | file path: {CSV_PATH}")
             CSV_PATH = file_path
             return True
         else:

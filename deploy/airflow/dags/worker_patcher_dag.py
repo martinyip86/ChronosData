@@ -24,15 +24,20 @@ default_args = {
 with DAG(
     'binance_daily_patching',
     default_args=default_args,
-    description='每天自动修补币安数据断档',
-    schedule='0 10 * * *',
+    description='Auto remedy for Binance data gaps daily',
+    schedule='@daily',
     start_date=datetime(2026,2,2),
     catchup=False,
     tags=['binance','data_quality']
 ) as dag:
     patching_task = PythonOperator(
         task_id='patch_btc_trades',
-        python_callable=run_patch_logic, 
+        python_callable=run_patch_logic,
+        op_kwargs={
+            "target_date":"{{ ds }}",
+            "exchange":"Binance",
+            "symbol":"BTCUSDT",
+        }
     )
 
     patching_task
