@@ -3,12 +3,17 @@ import os
 import glob
 import time
 import json
-import datetime
+import requests
+import zipfile
+import io
+from datetime import datetime,timedelta,timezone
 
-CSV_PATH = "temp/BTCUSDT-trades-2026-02-05.csv"
+CSV_PATH = None
+DATE_STR = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
 
 def main():
-    data_path = "data/raw/Binance/spot/BTC-USDT/trades/2026/02/05/*.parquet"
+    dt_obj = datetime.strptime(DATE_STR,"%Y-%m-%d")
+    data_path = f"data/raw/Binance/spot/BTC-USDT/trades/{dt_obj.strftime('%Y/%m/%d')}/*.parquet"
     files = sorted(glob.glob(data_path))
 
     if not files:
@@ -38,23 +43,30 @@ def main():
         if len(gaps) > 0:
             print(f"断档总数: {len(gaps)},最大断档市场{gaps['diff'].max() / 1000}")
             print(gaps)
-            for row in gaps.iter_rows(named=True):
-                parquet_path = os.path.join(
-                    "data/raw/Binance/spot/BTC-USDT/trades",
-                    f"{row['dt_start'].strftime('%Y/%m/%d/%Y%m%d_%H')}_trade.parquet"
-                )
-                patch_gap('BTC/USDT',row['before_gap_id'],row['after_gap_id'],parquet_path)
+            if download_and_unzip(DATE_STR):
+                official_df = pl.read_csv(CSV_PATH,has_header=False,new_columns=["trade_id","price","amount","cost","timestamp","is_maker","is_best"])
+                for row in gaps.iter_rows(named=True):
+                    parquet_path = os.path.join(
+                        "data/raw/Binance/spot/BTC-USDT/trades",
+                        f"{row['dt_start'].strftime('%Y/%m/%d/%Y%m%d_%H')}_trade.parquet"
+                    )
+                    patch_gap('BTC/USDT',row['before_gap_id'],row['after_gap_id'],parquet_path,official_df)
+
+                if os.path.exists(CSV_PATH):
+                    os.remove(CSV_PATH)
+                    print(f"易清理{CSV_PATH}文件")
+            else:
+                print("下载失败")        
 
         else:
             print("\n完美")
 
-def patch_gap(symbol,start_id,end_id,parquet_path):
+def patch_gap(symbol,start_id,end_id,parquet_path,official_df):
     if not os.path.exists(parquet_path):
         print(f"⚠️ 跳过：目标 Parquet 不存在 -> {parquet_path}")
         return
     
-    df = pl.read_csv(CSV_PATH,has_header=False,new_columns=["trade_id","price","amount","cost","timestamp","is_maker","is_best"])
-    df = df.filter(
+    df = official_df.filter(
         (pl.col('trade_id') >= start_id) & (pl.col('trade_id') <= end_id)
     ).with_columns(
         pl.lit(symbol).alias('symbol'),
@@ -72,6 +84,31 @@ def patch_gap(symbol,start_id,end_id,parquet_path):
     combine_df = pl.concat([exist_df,df]).unique(subset='trade_id').sort('trade_id')
     combine_df.write_parquet(parquet_path,compression="snappy")
     print(f"✅ 成功缝合 {len(df)} 条数据！")
+
+def download_and_unzip(date_str):
+    global CSV_PATH
+    url = f"https://data.binance.vision/data/spot/daily/trades/BTCUSDT/BTCUSDT-trades-{date_str}.zip"
+    file_path = f"temp/BTCUSDT-trades-{date_str}.csv"
+    if os.path.exists(file_path):
+        print(f"file is exist {file_path}")
+        CSV_PATH = file_path
+        return True
+    
+    print(f"正在下载 {date_str} 的官方补丁...")
+    try:
+        r = requests.get(url)
+        if r.status_code == 200:
+            z = zipfile.ZipFile(io.BytesIO(r.content))
+            z.extractall("temp/")
+            print("解压完成！")
+            CSV_PATH = file_path
+            return True
+        else:
+            print(f"下载失败，状态码: {r.status_code}")
+            return False
+    except Exception as e:
+        print(f"下载失败,error: {e}")
+        return False
 
 if __name__ == "__main__":
     main()
