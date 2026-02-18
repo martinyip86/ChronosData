@@ -18,6 +18,8 @@ class BinanceController(BaseController):
 
     async def connect(self):
         self.is_running = True
+        if self.queue is None:
+            self.queue = asyncio.Queue()#内部缓冲群
         print(f"Connected to {self.exchange_id} for {self.symbol}")
         logger.info(f"🟢 [WS-CONNECT] Connected Established | exchange: {self.exchange_id} | symbol: {self.symbol}")
 
@@ -92,9 +94,7 @@ class BinanceController(BaseController):
                         df = pl.DataFrame(buffer)
                         file_path = self.get_save_path(exchange=self.exchange_id,symbol=self.symbol,data_type=dtype)
                         if os.path.exists(file_path):
-                            exist_df = pl.read_parquet(file_path)
-                            commbine_df = pl.concat([exist_df,df]).unique().sort('timestamp')
-                            commbine_df.write_parquet(file_path,compression="snappy")
+                            await asyncio.to_thread(self._sync_save,file_path,df)
                         else:
                             df.write_parquet(file_path,compression='snappy')
 
@@ -104,6 +104,11 @@ class BinanceController(BaseController):
                     last_time = time.time()
             except Exception as e:
                 logger.error(f"❌ [STORAGE-CRITICAL] {self.symbol} save failed: {e}")
+
+    def _sync_save(self,file_path,df):
+        exist_df = pl.read_parquet(file_path)
+        commbine_df = pl.concat([exist_df,df]).unique().sort('timestamp')
+        commbine_df.write_parquet(file_path,compression="snappy")          
 
     def get_save_path(self,exchange:str,symbol:str,data_type:str,market_type='spot'):
         clear_symbol = symbol.replace('/','-').replace(':','-')

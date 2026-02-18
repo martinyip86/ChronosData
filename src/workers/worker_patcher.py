@@ -8,16 +8,24 @@ import zipfile
 import io
 from datetime import datetime,timedelta,timezone
 from src.utils.logger import logger
+from src.processors.validator import validator_trades
+from src.utils.monitoring_utils import report_swiss_metrics
 
 CSV_PATH = None
 
 def main(target_date=None):
+    rows_count = 0
+    is_perfect = True
+    last_ts = 0
+
     date_str = target_date or (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+    print(datetime.now(timezone.utc))
+    print(timedelta(days=1))
     dt_obj = datetime.strptime(date_str,"%Y-%m-%d")
     data_path = f"data/raw/Binance/spot/BTC-USDT/trades/{dt_obj.strftime('%Y/%m/%d')}/*.parquet"
     files = sorted(glob.glob(data_path))
 
-    logger.info(f"🔍Start sacnning local data | Date: {date_str} | path partern: {data_path}")
+    logger.info(f"🔍Start scanning local data | Date: {date_str} | path partern: {data_path}")
 
     if not files:
         logger.warning(f"⚠️Local parquet data not found,check if the collector is running normally,please.")
@@ -43,34 +51,45 @@ def main(target_date=None):
         ]).collect()
 
         if len(gaps) > 0:
+            is_perfect = False
             max_diff = gaps['diff'].max()
             logger.error(f"🚨 Severe data gaps detected! Total gaps: {len(gaps)} | Max ID jump{max_diff}")
             if download_and_unzip(date_str):
                 official_df = pl.read_csv(CSV_PATH,has_header=False,new_columns=["trade_id","price","amount","cost","timestamp","is_maker","is_best"])
+                validator_trades(official_df)
                 for row in gaps.iter_rows(named=True):
                     parquet_path = os.path.join(
                         "data/raw/Binance/spot/BTC-USDT/trades",
                         f"{row['dt_start'].strftime('%Y/%m/%d/%Y%m%d_%H')}_trade.parquet"
                     )
-                    patch_gap('BTC/USDT',row['before_gap_id'],row['after_gap_id'],parquet_path,official_df)
+                    df_len,df_last_ts = patch_gap('BTC/USDT',row['before_gap_id'],row['after_gap_id'],parquet_path,official_df)
+                    rows_count += df_len
+                    last_ts = df_last_ts
 
                 if os.path.exists(CSV_PATH):
                     os.remove(CSV_PATH)
-                    print(f"易清理{CSV_PATH}文件")
+                    logger.info(f"易清理{CSV_PATH}文件")
             else:
-                print("下载失败")        
-
+                raise FileNotFoundError(f"⚠️ Target patch CSV not found on Binance server for {date_str}")
         else:
             logger.info("✅ Perfect! Local data matches trade_id sequence,no remedy required.")
 
-def patch_gap(symbol,start_id,end_id,parquet_path,official_df):
+        report_swiss_metrics('BTC/USDT',rows_count,is_perfect,last_ts)
+
+def patch_gap(symbol,start_id,end_id,parquet_path,official_df:pl.DataFrame):
     if not os.path.exists(parquet_path):
-        print(f"⚠️ 跳过：目标 Parquet 不存在 -> {parquet_path}")
+        logger.info(f"⚠️ 跳过：目标 Parquet 不存在 -> {parquet_path}")
         return
     
-    df = official_df.filter(
+    patch_data = official_df.filter(
         (pl.col('trade_id') >= start_id) & (pl.col('trade_id') <= end_id)
-    ).with_columns(
+    )
+
+    if patch_data.is_empty():
+        logger.warning(f"🔍 No overlap found in official data for gap {start_id}-{end_id}")
+        return
+    
+    df = patch_data.with_columns(
         pl.lit(symbol).alias('symbol'),
         pl.lit('Binance').alias('exchange_id'),
         pl.col('trade_id').cast(pl.Utf8).alias('trade_id'),
@@ -85,14 +104,15 @@ def patch_gap(symbol,start_id,end_id,parquet_path,official_df):
     df = df.cast(exist_df.schema)
     combine_df = pl.concat([exist_df,df]).unique(subset='trade_id').sort('trade_id')
     combine_df.write_parquet(parquet_path,compression="snappy")
-    print(f"✅ 成功缝合 {len(df)} 条数据！")
+    logger.info(f"✅ 成功缝合 {len(df)} 条数据！")
+    return len(df),(df.select(pl.col('timestamp').tail(1)).item() * 1000)
 
 def download_and_unzip(date_str):
     global CSV_PATH
     url = f"https://data.binance.vision/data/spot/daily/trades/BTCUSDT/BTCUSDT-trades-{date_str}.zip"
     file_path = f"temp/BTCUSDT-trades-{date_str}.csv"
     if os.path.exists(file_path):
-        print(f"file is exist {file_path}")
+        logger.info(f"file is exist {file_path}")
         CSV_PATH = file_path
         return True
     
@@ -103,16 +123,19 @@ def download_and_unzip(date_str):
         if r.status_code == 200:
             z = zipfile.ZipFile(io.BytesIO(r.content))
             z.extractall("temp/")
-            print("解压完成！")
             logger.info(f"📦 Download and zip confirmed. | Elapsed time: {time.time() - start_time:.2f}s | file path: {CSV_PATH}")
             CSV_PATH = file_path
             return True
         else:
-            print(f"下载失败，状态码: {r.status_code}")
+            logger.info(f"Download failed,status code: {r.status_code}")
             return False
-    except Exception as e:
-        print(f"下载失败,error: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Network error: Unable to connect to Binance API | Detail: {e}")
+        raise ConnectionError(f"Binance API unavailable: {e}")
         return False
+    except IOError as e:
+        logger.error(f"❌ Disk failure: Unable to write data | Detail: {e}")
+        raise
 
 if __name__ == "__main__":
     main()

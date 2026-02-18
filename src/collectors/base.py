@@ -9,7 +9,7 @@ class BaseController(ABC):
         self.exchange_id = exchange_id
         self.is_running = False
         # self.client:Any = None
-        self.queue = asyncio.Queue()#内部缓冲群
+        self.queue = None
 
     @abstractmethod
     async def connect(self):

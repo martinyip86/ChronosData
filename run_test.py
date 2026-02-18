@@ -18,9 +18,14 @@ async def main():
             # trades = await collector.client.watch_trades(collector.symbol)
             # print(trades[0].keys())
             # print(trades[0])
-            df = pl.read_parquet('data/raw/Binance/spot/BTC-USDT/trades/2026/02/04/20260204_06_trade.parquet')
-            target_ts = 1770186109334
-            df = df.filter((pl.col('timestamp') > target_ts - 30000) & (pl.col('timestamp') < target_ts + 1000))
+            dir_path = "data/raw/Binance/spot/BTC-USDT/orderbook/2026/02/04/*.parquet"
+            df = pl.scan_parquet(dir_path)
+            df = df.sort('nonce')
+            df = df.with_columns(
+                pl.col('nonce').shift(1).alias('before_nonce'),
+                pl.col('nonce').alias('after_nonce')
+            ).with_columns((pl.col('after_nonce') - pl.col('before_nonce')).alias('diff')).filter(pl.col('diff') > 1).select(['bid_volume','ask_volume','nonce','timestamp']).collect()
+
             print(df)
             
         except Exception as e:

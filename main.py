@@ -6,7 +6,6 @@ async def main():
     controller = BinanceController(symbol)
 
     await controller.connect()
-
     try:
         print("\n正在开始采集程序...")
         await asyncio.gather(

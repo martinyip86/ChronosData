@@ -15,11 +15,35 @@ services:
     volumes:
       - ./data:/app/data    # 把容器内的 /app/data 映射到你电脑的 ./data 文件夹
       - ./logs:/app/logs    # 映射日志，方便排查
+      - ./src:/app/src
+      - ./main.py:/app/main.py
 
     # 资源限制（防止 Polars 瞬间吃光服务器内存）
     deploy:
       resources:
         limits:
           memory: 2G
+
+  #控制组件
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    
+  pushgateway:
+    image: prom/pushgateway:latest
+    ports:
+      - "9091:9091"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=administration
+    depends_on:
+      - prometheus
 
   

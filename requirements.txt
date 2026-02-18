@@ -10,6 +10,7 @@ ccxt
 requests
 fastapi
 uvicorn[standard]
+prometheus_client
 prometheus-fastapi-instrumentator
 
 # --- 数据科学与高性能计算 (QR 的核心) ---

@@ -34,7 +34,7 @@ with DAG(
         task_id='patch_btc_trades',
         python_callable=run_patch_logic,
         op_kwargs={
-            "target_date":"{{ ds }}",
+            "target_date":"{{ macros.ds_add(ds, -1) }}",
             "exchange":"Binance",
             "symbol":"BTCUSDT",
         }
