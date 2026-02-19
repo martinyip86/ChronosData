@@ -25,7 +25,7 @@ with DAG(
     'binance_daily_patching',
     default_args=default_args,
     description='Auto remedy for Binance data gaps daily',
-    schedule='@daily',
+    schedule='30 1 * * *',
     start_date=datetime(2026,2,2),
     catchup=False,
     tags=['binance','data_quality']

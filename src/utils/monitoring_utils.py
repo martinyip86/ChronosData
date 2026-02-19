@@ -1,6 +1,8 @@
 import time
 from prometheus_client import Gauge,CollectorRegistry,push_to_gateway
-from src.utils.logger import logger
+from src.utils.logger import setup_logger
+
+logger = setup_logger(name="worker-patcher")
 
 def report_swiss_metrics(symbol:str,rows_count,is_perfect,last_ts_ms,patch_count=0):
     #注册独立列表
@@ -20,7 +22,7 @@ def report_swiss_metrics(symbol:str,rows_count,is_perfect,last_ts_ms,patch_count
         delay_ms = current_ms - last_ts_ms
         g_delay.labels(**common_symbol).set(max(0,delay_ms))
         g_heatbeat.labels(**common_symbol).set(time.time())
-        push_to_gateway('http://host.docker.internal:9091',job='binance_patcher',registry=registry,timeout=3)
+        push_to_gateway('http://pushgateway:9091',job='binance_patcher',registry=registry,timeout=3)
 
         logger.info(f"🇨🇭 [Swiss-Grade] Metrics for {symbol} pushed successfully.")
     except Exception as e:

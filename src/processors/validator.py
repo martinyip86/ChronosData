@@ -1,5 +1,7 @@
 import polars as pl
-from src.utils.logger import logger
+from src.utils.logger import setup_logger
+
+logger = setup_logger("worker-patcher")
 
 def validator_trades(df:pl.DataFrame):
     if not (df['price'] > 0).all():

@@ -6,3 +6,6 @@ scrape_configs:
     honor_labels: true
     static_configs:
       - targets: ['pushgateway:9091']
+  - job_name: 'collector'
+    static_configs:
+      - targets: ['pushgateway:9091']

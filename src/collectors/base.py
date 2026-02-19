@@ -1,7 +1,7 @@
 from abc import ABC,abstractmethod
 import asyncio
+import time
 # from typing import Any
-from src.models.schema import TickData
 
 class BaseController(ABC):
     def __init__(self,symbol:str,exchange_id:str):
@@ -9,7 +9,9 @@ class BaseController(ABC):
         self.exchange_id = exchange_id
         self.is_running = False
         # self.client:Any = None
-        self.queue = None
+        self.queue = self.queue = asyncio.Queue(maxsize=50000)#内部缓冲群
+        self.last_msg_time = time.time()
+        self._reset_lock = asyncio.Lock()
 
     @abstractmethod
     async def connect(self):

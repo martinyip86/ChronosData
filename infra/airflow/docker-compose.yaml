@@ -339,3 +339,8 @@ services:
 
 volumes:
   postgres-db-volume:
+
+networks:
+  default:
+    external: true
+    name: swiss-quant-pipeline_default

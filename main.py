@@ -1,7 +1,11 @@
 import asyncio
+from prometheus_client import start_http_server
 from src.collectors.binance_ws import BinanceController
+from src.monitoring import metrics
 
 async def main():
+    start_http_server(8000)
+
     symbol = 'BTC/USDT'
     controller = BinanceController(symbol)
 

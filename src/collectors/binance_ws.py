@@ -4,9 +4,13 @@ import asyncio
 import time
 import os
 from datetime import datetime,timezone
+from prometheus_client import push_to_gateway,REGISTRY,generate_latest
 from src.collectors.base import BaseController
 from src.models.schema import TickData,TradeData
-from src.utils.logger import logger
+from src.utils.logger import setup_logger
+from src.monitoring.metrics import ws_reconnect_total,ws_error_total,silence_gauge,parquet_write_duration,queue_size_gauge
+
+print(generate_latest(REGISTRY).decode())
 
 class BinanceController(BaseController):
     def __init__(self,symbol:str):
@@ -15,25 +19,37 @@ class BinanceController(BaseController):
             'enableRateLimit':True,
             'options':{'defaultType':'spot'}
         })
+        self.logger = setup_logger(name="collector.ws.binance",log_file="logs/collector/collector.log")
 
     async def connect(self):
         self.is_running = True
-        if self.queue is None:
-            self.queue = asyncio.Queue()#内部缓冲群
+            
         print(f"Connected to {self.exchange_id} for {self.symbol}")
-        logger.info(f"🟢 [WS-CONNECT] Connected Established | exchange: {self.exchange_id} | symbol: {self.symbol}")
+        self.logger.info(f"🟢 [WS-CONNECT] Connected Established | exchange: {self.exchange_id} | symbol: {self.symbol}")
 
     async def fetch_data(self):
         await asyncio.gather(
             self._watch_orderbook(),
-            self._watch_trades()
+            self._watch_trades(),
+            self.watchdog(),
+            self.push_metrics_periodically(),
+            return_exceptions=True
         )
 
     async def _watch_orderbook(self):
-        logger.info(f"📡 Start Orderbook Listener Thread: {self.symbol}")
+        self.logger.info(f"📡 Start Orderbook Listener Thread: {self.symbol}")
         while self.is_running:
             try:
-                orderbook = await self.client.watch_order_book(self.symbol)
+                try:
+                    orderbook = await asyncio.wait_for(
+                        self.client.watch_order_book(self.symbol),
+                        timeout=20
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.warning("WS timeout, reconnecting...")
+                    await self._reset_client()
+                    continue
+
                 ts = orderbook.get('timestamp') or int(time.time() * 1000)
                 tick = TickData(
                     symbol=self.symbol,
@@ -49,21 +65,40 @@ class BinanceController(BaseController):
                     exchange_time=int(ts)
                 )
                 await self.queue.put(tick)
+                self.last_msg_time = time.time()
             except Exception as e:
                 print(f"Orderbook Error: {e}")
-                logger.error(f"🚨 [OB-ERROR] {self.symbol} listener Exception: {e}")
+                self.logger.error(f"🚨 [OB-ERROR] {self.symbol} listener Exception: {e}")
+                ws_error_total.labels(
+                    exchange=self.exchange_id,
+                    symbol=self.symbol
+                ).inc()
                 await asyncio.sleep(5)
 
     async def _watch_trades(self):
-        logger.info(f"📡 Start Trades Listener Thread: {self.symbol}")
+        self.logger.info(f"📡 Start Trades Listener Thread: {self.symbol}")
         while self.is_running:
             try:
-                trades_list = await self.client.watch_trades(self.symbol)
+                try:
+                    trades_list = await asyncio.wait_for(
+                        self.client.watch_trades(self.symbol),
+                        timeout=20
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.warning("WS timeout, reconnecting...")
+                    await self._reset_client()
+                    continue
+
                 for trade_dict in trades_list:
-                   trade = TradeData.from_ccxt(trade_dict,self.exchange_id)
-                   await self.queue.put(trade)
+                    trade = TradeData.from_ccxt(trade_dict,self.exchange_id)
+                    await self.queue.put(trade)
+                    self.last_msg_time = time.time()
             except Exception as e:
-                logger.error(f"🚨 [TD-ERROR] {self.symbol} listener Exception: {e}")
+                self.logger.error(f"🚨 [TD-ERROR] {self.symbol} listener Exception: {e}")
+                ws_error_total.labels(
+                    exchange=self.exchange_id,
+                    symbol=self.symbol
+                ).inc()
                 await asyncio.sleep(5)
 
     async def _fetch_trades(self):
@@ -73,7 +108,7 @@ class BinanceController(BaseController):
             await self.queue.put(trade)
 
     async def storage_worker(self):
-        logger.info(f"💾 Storage Worker started | Reflash range: 10s")
+        self.logger.info(f"💾 Storage Worker started | Reflash range: 10s")
         buffers = {'orderbook':[],'trades':[]}
         save_interval = 10
         last_time = time.time()
@@ -91,6 +126,7 @@ class BinanceController(BaseController):
                     for dtype,buffer in buffers.items():
                         if not buffer: continue
                         
+                        start_save = time.time()
                         df = pl.DataFrame(buffer)
                         file_path = self.get_save_path(exchange=self.exchange_id,symbol=self.symbol,data_type=dtype)
                         if os.path.exists(file_path):
@@ -98,12 +134,20 @@ class BinanceController(BaseController):
                         else:
                             df.write_parquet(file_path,compression='snappy')
 
-                        start_save = time.time()
-                        logger.info(f"✅ [SAVE] {self.symbol} | Type: {dtype} | Writed: {len(buffer)} | Elapsed time: {time.time()-start_save:.2f}s")
+                        self.logger.info(f"✅ [SAVE] {self.symbol} | Type: {dtype} | Writed: {len(buffer)} | Elapsed time: {time.time()-start_save:.2f}s")
+                        parquet_write_duration.labels(
+                            exchange=self.exchange_id,
+                            symbol=self.symbol,
+                            type=dtype
+                        ).observe(time.time() - start_save)
                         buffers[dtype] = []
                     last_time = time.time()
             except Exception as e:
-                logger.error(f"❌ [STORAGE-CRITICAL] {self.symbol} save failed: {e}")
+                self.logger.error(f"❌ [STORAGE-CRITICAL] {self.symbol} save failed: {e}")
+                ws_error_total.labels(
+                    exchange=self.exchange_id,
+                    symbol=self.symbol
+                ).inc()
 
     def _sync_save(self,file_path,df):
         exist_df = pl.read_parquet(file_path)
@@ -127,7 +171,69 @@ class BinanceController(BaseController):
         data_name =  'ob' if data_type == 'orderbook' else 'trade'
         file_name = f"{now.strftime('%Y%m%d_%H')}_{data_name}.parquet"
         return os.path.join(file_dir,file_name)
+    
+    async def _reset_client(self):
+        async with self._reset_lock:
+            try:
+                await self.client.close()
+            except Exception:
+                pass
 
+            await asyncio.sleep(1)
+            
+            self.client = ccxt.binance({
+                'enableRateLimit':True,
+                'options':{'defaultType':'spot'}
+            })
+            ws_reconnect_total.labels(
+                exchange=self.exchange_id,
+                symbol=self.symbol
+            ).inc()
+
+            self.last_msg_time = time.time()
+
+    async def watchdog(self):
+        self.logger.info("🛡 Watchdog started")
+        while self.is_running:
+            await asyncio.sleep(5)
+            silence = time.time() - self.last_msg_time
+            silence_gauge.labels(
+                exchange=self.exchange_id,
+                symbol=self.symbol
+            ).set(silence)
+            queue_size_gauge.labels(
+                exchange=self.exchange_id,
+                symbol=self.symbol
+            ).set(self.queue.qsize())
+            if silence > 30:
+                self.logger.error(f"🚨 WS silent for {silence:.1f}s, force reconnect")
+                ws_error_total.labels(
+                    exchange=self.exchange_id,
+                    symbol=self.symbol
+                ).inc()
+                await self._reset_client()
+
+    async def push_metrics_periodically(self):
+        self.logger.info("🛡 Metrics pusher started")
+        while self.is_running:
+            try:
+                await asyncio.to_thread(
+                    push_to_gateway,
+                    'http://pushgateway:9091',
+                    job="collector",
+                    registry=REGISTRY,
+                    timeout=3
+                )
+                
+                await asyncio.sleep(10)
+            except Exception as e:
+                self.logger.error(f"Push metrics failed: {e}")
+                ws_error_total.labels(
+                    exchange=self.exchange_id,
+                    symbol=self.symbol
+                ).inc()
+                await asyncio.sleep(10)
+                
     async def stop(self):
         await self.client.close()
         await super().stop()

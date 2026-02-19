@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 这里的 collector 是你的服务名称
   collector:
@@ -18,17 +16,21 @@ services:
       - ./src:/app/src
       - ./main.py:/app/main.py
 
+    command: python /app/main.py
+
+    mem_limit: 2g
+
     # 资源限制（防止 Polars 瞬间吃光服务器内存）
-    deploy:
-      resources:
-        limits:
-          memory: 2G
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
 
   #控制组件
   prometheus:
     image: prom/prometheus:latest
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./infra/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
     

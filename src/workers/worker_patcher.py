@@ -7,11 +7,12 @@ import requests
 import zipfile
 import io
 from datetime import datetime,timedelta,timezone
-from src.utils.logger import logger
+from src.utils.logger import setup_logger
 from src.processors.validator import validator_trades
 from src.utils.monitoring_utils import report_swiss_metrics
 
 CSV_PATH = None
+logger = setup_logger(name="worker-patcher")
 
 def main(target_date=None):
     rows_count = 0
@@ -53,7 +54,7 @@ def main(target_date=None):
         if len(gaps) > 0:
             is_perfect = False
             max_diff = gaps['diff'].max()
-            logger.error(f"🚨 Severe data gaps detected! Total gaps: {len(gaps)} | Max ID jump{max_diff}")
+            logger.info(f"🚨 Severe data gaps detected! Total gaps: {len(gaps)} | Max ID jump{max_diff}")
             if download_and_unzip(date_str):
                 official_df = pl.read_csv(CSV_PATH,has_header=False,new_columns=["trade_id","price","amount","cost","timestamp","is_maker","is_best"])
                 validator_trades(official_df)
@@ -119,7 +120,7 @@ def download_and_unzip(date_str):
     logger.info(f"🌐 Rquesting a patch from binance")
     start_time = time.time()
     try:
-        r = requests.get(url)
+        r = requests.get(url,timeout=20)
         if r.status_code == 200:
             z = zipfile.ZipFile(io.BytesIO(r.content))
             z.extractall("temp/")
