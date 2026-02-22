@@ -18,19 +18,18 @@ services:
 
     command: python /app/main.py
 
-    mem_limit: 2g
-
     # 资源限制（防止 Polars 瞬间吃光服务器内存）
-    # deploy:
-    #   resources:
-    #     limits:
-    #       memory: 2G
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   #控制组件
   prometheus:
     image: prom/prometheus:latest
     volumes:
       - ./infra/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./infra/monitoring/prometheus/prometheus_data:/prometheus
     ports:
       - "9090:9090"
     
@@ -45,6 +44,9 @@ services:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=administration
+    volumes:
+      - ./infra/monitoring/grafana/grafana_data:/var/lib/grafana
+    user: "472"   # 关键：Grafana 容器内部默认使用 ID 为 472 的用户，需要对齐权限
     depends_on:
       - prometheus
 

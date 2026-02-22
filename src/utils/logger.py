@@ -16,7 +16,7 @@ def setup_logger(name="swiss-quant",log_file=None):
 
     # 如果已经有 Handler 了（比如 Airflow 已经初始化过），直接返回，避免重复打印
     if logger.handlers:
-        has_file_handler = any(isinstance(h,logging.FileHandler()) for h in logger.handlers)
+        has_file_handler = any(isinstance(h,logging.FileHandler) for h in logger.handlers)
         if log_file and not has_file_handler:
             _add_file_handler(logger, log_file, formatter)
         return logger

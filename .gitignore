@@ -11,3 +11,6 @@ __pycache__/
 #OS generated files
 .DS_store
 .env
+
+/infra/monitoring/grafana/grafana_data
+/infra/monitoring/prometheus/prometheus_data

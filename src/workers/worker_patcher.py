@@ -6,10 +6,12 @@ import json
 import requests
 import zipfile
 import io
+import uuid
 from datetime import datetime,timedelta,timezone
 from src.utils.logger import setup_logger
 from src.processors.validator import validator_trades
 from src.utils.monitoring_utils import report_swiss_metrics
+from src.processors.compactor import DataCompactor
 
 CSV_PATH = None
 logger = setup_logger(name="worker-patcher")
@@ -23,7 +25,7 @@ def main(target_date=None):
     print(datetime.now(timezone.utc))
     print(timedelta(days=1))
     dt_obj = datetime.strptime(date_str,"%Y-%m-%d")
-    data_path = f"data/raw/Binance/spot/BTC-USDT/trades/{dt_obj.strftime('%Y/%m/%d')}/*.parquet"
+    data_path = f"data/raw/Binance/spot/BTC-USDT/trades/{dt_obj.strftime('%Y/%m/%d')}/[0-9]*.parquet"
     files = sorted(glob.glob(data_path))
 
     logger.info(f"🔍Start scanning local data | Date: {date_str} | path partern: {data_path}")
@@ -59,17 +61,20 @@ def main(target_date=None):
                 official_df = pl.read_csv(CSV_PATH,has_header=False,new_columns=["trade_id","price","amount","cost","timestamp","is_maker","is_best"])
                 validator_trades(official_df)
                 for row in gaps.iter_rows(named=True):
-                    parquet_path = os.path.join(
-                        "data/raw/Binance/spot/BTC-USDT/trades",
-                        f"{row['dt_start'].strftime('%Y/%m/%d/%Y%m%d_%H')}_trade.parquet"
-                    )
-                    df_len,df_last_ts = patch_gap('BTC/USDT',row['before_gap_id'],row['after_gap_id'],parquet_path,official_df)
+                    # parquet_path = os.path.join(
+                    #     "data/raw/Binance/spot/BTC-USDT/trades",
+                    #     f"{row['dt_start'].strftime('%Y/%m/%d/%Y%m%d_%H')}_trade.parquet"
+                    # )
+                    df_len,df_last_ts = patch_gap('BTC/USDT',row['before_gap_id'],row['after_gap_id'],official_df,dt_obj,files)
                     rows_count += df_len
                     last_ts = df_last_ts
 
                 if os.path.exists(CSV_PATH):
                     os.remove(CSV_PATH)
                     logger.info(f"易清理{CSV_PATH}文件")
+
+                compactor_obj = DataCompactor("data/raw/Binance/spot/BTC-USDT/trades")
+                compactor_obj.compact_day(dt_obj,'trade')
             else:
                 raise FileNotFoundError(f"⚠️ Target patch CSV not found on Binance server for {date_str}")
         else:
@@ -77,10 +82,10 @@ def main(target_date=None):
 
         report_swiss_metrics('BTC/USDT',rows_count,is_perfect,last_ts)
 
-def patch_gap(symbol,start_id,end_id,parquet_path,official_df:pl.DataFrame):
-    if not os.path.exists(parquet_path):
-        logger.info(f"⚠️ 跳过：目标 Parquet 不存在 -> {parquet_path}")
-        return
+def patch_gap(symbol,start_id,end_id,official_df:pl.DataFrame,dt_obj:datetime,reference_files:list):
+    # if not os.path.exists(parquet_path):
+    #     logger.info(f"⚠️ 跳过：目标 Parquet 不存在 -> {parquet_path}")
+    #     return
     
     patch_data = official_df.filter(
         (pl.col('trade_id') >= start_id) & (pl.col('trade_id') <= end_id)
@@ -100,12 +105,37 @@ def patch_gap(symbol,start_id,end_id,parquet_path,official_df:pl.DataFrame):
         pl.lit(json.dumps({'info':'restored_from_official_csv'})).alias('raw_info'),
         pl.lit(int(time.time() * 1000)).alias('local_timestamp')
     )
-    exist_df = pl.read_parquet(parquet_path)
-    df = df.select(exist_df.columns)
-    df = df.cast(exist_df.schema)
-    combine_df = pl.concat([exist_df,df]).unique(subset='trade_id').sort('trade_id')
-    combine_df.write_parquet(parquet_path,compression="snappy")
-    logger.info(f"✅ 成功缝合 {len(df)} 条数据！")
+    # exist_df = pl.read_parquet(parquet_path)
+    # df = df.select(exist_df.columns)
+    # df = df.cast(exist_df.schema)
+    # combine_df = pl.concat([exist_df,df]).unique(subset='trade_id').sort('trade_id')
+    if len(reference_files) > 0:
+        try:
+            ref_schema = pl.read_parquet_schema(reference_files[0])
+            df = df.select(list(ref_schema.keys()))
+            df = df.cast(ref_schema)
+        except Exception as e:
+            logger.error(f"❌ Schema alignment failed: {e}")
+            # 如果对齐失败，后续合并必报错，根据你的审慎原则，这里应该提前抛出
+            raise
+
+    dir_name = os.path.join(
+        "data/raw/Binance/spot/BTC-USDT/trades",
+        dt_obj.strftime('%Y'),
+        dt_obj.strftime('%m'),
+        dt_obj.strftime('%d')
+    )
+    file_name = f"{dt_obj.strftime('%Y%m%d')}_backfill_{int(time.time())}_{uuid.uuid4().hex}.parquet"
+    file_path = os.path.join(dir_name,file_name)
+    temp_path = f"{file_path}.{uuid.uuid4().hex}.tmp"
+    try:
+        df.write_parquet(temp_path,compression="snappy")
+        os.replace(temp_path,file_path)
+        logger.info(f"✅ 成功缝合 {len(df)} 条数据！Path: {file_path}")
+    except Exception as e:
+        logger.error(f"❌ [SAVE-ERROR] Atomic write failed: {e}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
     return len(df),(df.select(pl.col('timestamp').tail(1)).item() * 1000)
 
 def download_and_unzip(date_str):

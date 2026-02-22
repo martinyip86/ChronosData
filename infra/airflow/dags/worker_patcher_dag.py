@@ -25,9 +25,10 @@ with DAG(
     'binance_daily_patching',
     default_args=default_args,
     description='Auto remedy for Binance data gaps daily',
-    schedule='30 1 * * *',
+    schedule='0 11 * * *',
     start_date=datetime(2026,2,2),
     catchup=False,
+    max_active_runs=1,
     tags=['binance','data_quality']
 ) as dag:
     patching_task = PythonOperator(

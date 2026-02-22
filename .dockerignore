@@ -1,6 +1,8 @@
 # 数据与日志
 /data
 /logs
+/infra/monitoring/grafana/grafana_data
+/infra/monitoring/prometheus/prometheus_data
 
 # 敏感文件
 .env

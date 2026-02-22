@@ -10,7 +10,6 @@ class BaseController(ABC):
         self.is_running = False
         # self.client:Any = None
         self.queue = self.queue = asyncio.Queue(maxsize=50000)#内部缓冲群
-        self.last_msg_time = time.time()
         self._reset_lock = asyncio.Lock()
 
     @abstractmethod
