@@ -22,7 +22,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 10G
+        reservations:
+          memory: 4G
 
   #控制组件
   prometheus:
