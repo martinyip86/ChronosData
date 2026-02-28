@@ -33,6 +33,19 @@ class TradeData(BaseModel):
 
     @classmethod
     def from_ccxt(cls,trade:dict,exchange:str):
+        info = trade.get('info', {})
+        
+        # 1. 判定 is_taker_buyer (兼容逻辑)
+        # 币安原生：m 为 True 表示 Maker 是买家 -> Taker 是卖家
+        is_m = info.get('m') if 'm' in info else info.get('isBuyerMaker')
+        
+        if is_m is not None:
+            is_taker_buyer = not (str(is_m).lower() == 'true')
+        else:
+            # 兼容 backfill 时手动传入的字段，如果都没有，默认 False
+            is_taker_buyer = trade.get('is_taker_buyer', False)
+
+
         return cls(
             symbol = trade['symbol'],
             exchange_id = exchange,
@@ -42,6 +55,6 @@ class TradeData(BaseModel):
             price = float(trade['price']),
             amount = float(trade['amount']),
             cost = float(trade.get('cost',0.0)),
-            is_taker_buyer = not trade['info'].get('m',False),
+            is_taker_buyer=is_taker_buyer,
             raw_info = json.dumps(trade['info'])
         )

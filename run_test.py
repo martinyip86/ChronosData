@@ -1,6 +1,9 @@
 import asyncio
 from src.collectors.binance_ws import BinanceController
 import json
+import sys
+print(f"当前 Python 路径: {sys.executable}")
+import redis
 import polars as pl
 
 async def main():
@@ -10,29 +13,24 @@ async def main():
 
     print("--- 开始获取 Binance 实时订单簿数据 (前3次更新) ---")
 
-    for i in range(3):
-        try:
-            # orderbook = await collector.client.watch_order_book(collector.symbol)
-            # print(type(orderbook['timestamp']))
-            # print(f"bids: {orderbook['bids'][0]} | asks: {orderbook['asks'][0]} | timestamp: {orderbook['timestamp']} | datetime: {orderbook['datetime']} | nonce: {orderbook['nonce']} | symbol: {orderbook['symbol']}")
-            # trades = await collector.client.watch_trades(collector.symbol)
-            # print(trades[0].keys())
-            # print(trades[0])
-            dir_path = "data/raw/Binance/spot/BTC-USDT/orderbook/2026/02/04/*.parquet"
-            df = pl.scan_parquet(dir_path)
-            df = df.sort('nonce')
-            df = df.with_columns(
-                pl.col('nonce').shift(1).alias('before_nonce'),
-                pl.col('nonce').alias('after_nonce')
-            ).with_columns((pl.col('after_nonce') - pl.col('before_nonce')).alias('diff')).filter(pl.col('diff') > 1).select(['bid_volume','ask_volume','nonce','timestamp']).collect()
-
-            print(df)
-            
-        except Exception as e:
-            print(f"error: {e}")
-        finally:
-            print(f"正在关闭，释放资源")
-            await collector.client.close()
+    try:
+        # file_path = 'data/raw/Binance/spot/BTC-USDT/trades/2026/02/27/20260227_060237_936601_trade.parquet'
+        # df = pl.read_parquet(file_path)
+        # print(df.head(1))
+        params = {
+            'symbol':'BTCUSDT',
+            'fromId':'6025330808',
+            'limit':1000
+        }
+        trade_rest_data = await collector.client_rest.publicGetHistoricalTrades(params)
+        print(trade_rest_data[0])
+        
+    except Exception as e:
+        print(f"error: {e}")
+    finally:
+        print(f"正在关闭，释放资源")
+        await collector.client_rest.close()
+        
 
 if __name__ == "__main__":
     asyncio.run(main())

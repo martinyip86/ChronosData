@@ -32,3 +32,4 @@ plotly
 # --- 数据库 (备选) ---
 # sqlalchemy
 # aiosqlite
+redis

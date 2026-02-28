@@ -4,20 +4,28 @@ import asyncio
 import time
 import os
 import uuid
+import redis.asyncio as redis
+import json
+import random
 from datetime import datetime,timezone
+from dotenv import load_dotenv
 from prometheus_client import push_to_gateway,REGISTRY,generate_latest
 from src.collectors.base import BaseController
 from src.models.schema import TickData,TradeData
 from src.utils.logger import setup_logger
 from src.monitoring.metrics import ws_reconnect_total,ws_error_total,silence_gauge,parquet_write_duration,queue_size_gauge
 
-print(generate_latest(REGISTRY).decode())
+load_dotenv()
+
+api_key = os.getenv('BINANCE_API_KEY')
+api_secret = os.getenv('BINANCE_SECRET')
 
 class BinanceController(BaseController):
     def __init__(self,symbol:str):
         super().__init__(symbol,'Binance')
-        self.client_ob = self._create_client()
-        self.client_trade = self._create_client()
+        self.client_ob = self._create_client(authenticated=False)
+        self.client_trade = self._create_client(authenticated=False)
+        self.client_rest = self._create_client(authenticated=True)
         self.Lock_ob = asyncio.Lock()
         self.Lock_trade = asyncio.Lock()
         self.last_reconnect_ts_ob = 0
@@ -27,15 +35,27 @@ class BinanceController(BaseController):
         self.last_msg_time_ob = time.time()
         self.last_msg_time_trade = time.time()
         self.logger = setup_logger(name="collector.ws.binance",log_file="logs/collector/collector.log")
+        self.last_id_key = f"last_trade_id:{symbol}"
+        self.dedup_prefix = f"seen:{symbol.replace('/', '')}"
 
-    def _create_client(self):
-        client = ccxt.binance({
+        self.r = redis.Redis(host='redis',port=6379,decode_responses=True)
+
+    def _create_client(self,authenticated=False):
+        config = {
             'enableRateLimit':True,
             'options':{'defaultType':'spot'}
-        })
-        return client
+        }
+        if authenticated:
+            config.update({
+                'apiKey': api_key,
+                'secret': api_secret,
+            })
+        return ccxt.binance(config)
 
     async def connect(self):
+        wait_time = random.uniform(1, 5)
+        await asyncio.sleep(wait_time)
+
         self.is_running = True
             
         print(f"Connected to {self.exchange_id} for {self.symbol}")
@@ -112,7 +132,21 @@ class BinanceController(BaseController):
 
                 for trade_dict in trades_list:
                     trade = TradeData.from_ccxt(trade_dict,self.exchange_id)
-                    await self.queue.put(trade)
+
+                    curr_id = int(trade.trade_id)
+
+                    last_id_str = await self.r.get(self.last_id_key)
+                    if last_id_str:
+                        last_id = int(last_id_str)
+
+                        if curr_id > last_id + 1:
+                            asyncio.create_task(self._backfill_trade(last_id + 1, curr_id - 1))
+
+                    if await self.r.setnx(f"{self.dedup_prefix}:{curr_id}",1):
+                        await self.r.expire(f"{self.dedup_prefix}:{curr_id}",3600)
+                        await self.r.set(self.last_id_key,curr_id)
+
+                        await self.queue.put(trade)
                     self.last_msg_time_trade = time.time()
             except Exception as e:
                 self.logger.error(f"🚨 [TD-ERROR] {self.symbol} listener Exception: {e}")
@@ -121,12 +155,6 @@ class BinanceController(BaseController):
                     symbol=self.symbol
                 ).inc()
                 await asyncio.sleep(10)
-
-    async def _fetch_trades(self):
-        trades_list = await self.client.fetch_trades(self.symbol,since=1770186109334,limit=1000)
-        for trade_dict in trades_list:
-            trade = TradeData.from_ccxt(trade_dict,self.exchange_id)
-            await self.queue.put(trade)
 
     async def storage_worker(self):
         self.logger.info(f"💾 Storage Worker started | Reflash range: 10s")
@@ -227,7 +255,7 @@ class BinanceController(BaseController):
             await asyncio.sleep(1)
             
             try:
-                new_client = self._create_client()
+                new_client = self._create_client(authenticated=False)
                 if client_type == 'ob':
                     self.client_ob = new_client
                     self.last_reconnect_ts_ob = time.time()
@@ -296,6 +324,66 @@ class BinanceController(BaseController):
                     symbol=self.symbol
                 ).inc()
                 await asyncio.sleep(10)
+
+    async def _backfill_trade(self,start_id:int,end_id:int):
+
+        self.logger.info(f"⏳ [BACKFILL] 启动反补自愈: ID {start_id} -> {end_id}")
+        current_from_id = start_id
+        total_patched = 0
+        try:
+            while current_from_id <= end_id:
+                params = {
+                    'symbol':self.symbol.replace('/','').replace('-',''),
+                    'fromId':current_from_id,
+                    'limit':1000
+                }
+                
+                try:
+                    trades = await asyncio.wait_for(
+                        self.client_rest.publicGetHistoricalTrades(params),
+                        timeout=20
+                    )
+                except asyncio.TimeoutError:
+                    asyncio.sleep(30)
+                    continue
+                
+                for trade in trades:
+                    t_id = int(trade['id'])
+                    if t_id > end_id:
+                        current_from_id = end_id + 1
+                        break
+
+                    if await self.r.setnx(f"{self.dedup_prefix}:{t_id}", 1):
+                        await self.r.expire(f"{self.dedup_prefix}:{t_id}", 3600)
+
+                        ccxt_format = {
+                            'symbol': self.symbol,
+                            'id': str(trade['id']),
+                            'timestamp': int(trade['time']),
+                            'side': 'sell' if trade['isBuyerMaker'] else 'buy',
+                            'price': float(trade['price']),
+                            'amount': float(trade['qty']),
+                            'cost': float(trade['quoteQty']),
+                            'is_taker_buyer': False if trade['isBuyerMaker'] else True,
+                            'info': trade # 原始数据存入 info
+                        }
+
+                        trade_obj = TradeData.from_ccxt(ccxt_format, self.exchange_id)
+
+                        await self.queue.put(trade_obj)
+
+                        current_from_id = t_id + 1
+                        total_patched += 1
+
+                self.logger.info(f"✅ [BACKFILL] 已补全 {total_patched} 条数据，当前进度 ID: {current_from_id}")
+                if len(trades) < 1000:
+                    current_from_id = end_id + 1 # 强制跳出 while
+                    break
+                
+                # 防止触发 API 频率限制
+                await asyncio.sleep(1)
+        except Exception as e:
+            self.logger.error(f"❌ [BACKFILL-CRITICAL] 反补过程中断: {e}")
                 
     async def stop(self):
         await self.client_ob.close()
