@@ -33,3 +33,5 @@ plotly
 # sqlalchemy
 # aiosqlite
 redis
+clickhouse-connect
+tenacity

@@ -26,6 +26,10 @@ services:
         reservations:
           memory: 4G
 
+    depends_on:
+      - redis
+      - clickhouse
+
   #控制组件
   prometheus:
     image: prom/prometheus:latest
@@ -51,5 +55,36 @@ services:
     user: "472"   # 关键：Grafana 容器内部默认使用 ID 为 472 的用户，需要对齐权限
     depends_on:
       - prometheus
+
+  redis:
+    image: redis:alpine
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse-server
+    environment:
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=martin1510
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse_logs:/var/log/clickhouse-server
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   

@@ -12,7 +12,9 @@ __pycache__/
 .DS_store
 .env
 
-/infra/monitoring/grafana/grafana_data
-/infra/monitoring/prometheus/prometheus_data
-/infra/airflow/logs
-/logs
+clickhouse_data/
+clickhouse_logs/
+infra/monitoring/grafana/grafana_data
+infra/monitoring/prometheus/prometheus_data
+infra/airflow/logs
+logs

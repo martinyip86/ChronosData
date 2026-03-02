@@ -327,7 +327,7 @@ class BinanceController(BaseController):
 
     async def _backfill_trade(self,start_id:int,end_id:int):
 
-        self.logger.info(f"⏳ [BACKFILL] 启动反补自愈: ID {start_id} -> {end_id}")
+        self.logger.info(f"⏳ [BACKFILL][{self.symbol}] 启动反补自愈: ID {start_id} -> {end_id}")
         current_from_id = start_id
         total_patched = 0
         try:
@@ -375,7 +375,7 @@ class BinanceController(BaseController):
                         current_from_id = t_id + 1
                         total_patched += 1
 
-                self.logger.info(f"✅ [BACKFILL] 已补全 {total_patched} 条数据，当前进度 ID: {current_from_id}")
+                self.logger.info(f"✅ [BACKFILL][{self.symbol}] 已补全 {total_patched} 条数据，当前进度 ID: {current_from_id}")
                 if len(trades) < 1000:
                     current_from_id = end_id + 1 # 强制跳出 while
                     break
