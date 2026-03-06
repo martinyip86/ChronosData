@@ -38,7 +38,7 @@ class BinanceController(BaseController):
         self.last_id_key = f"last_trade_id:{symbol}"
         self.dedup_prefix = f"seen:{symbol.replace('/', '')}"
 
-        self.r = redis.Redis(host='redis',port=6379,decode_responses=True)
+        self.r = redis.Redis(host='quant_redis',port=6379,decode_responses=True)
 
     def _create_client(self,authenticated=False):
         config = {

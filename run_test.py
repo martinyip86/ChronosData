@@ -1,36 +1,44 @@
 import asyncio
 from src.collectors.binance_ws import BinanceController
+import time
 import json
-import sys
-print(f"当前 Python 路径: {sys.executable}")
-import redis
+import random
+import redis.asyncio as redis
 import polars as pl
+import ccxt.pro as ccxt_pro
+from src.utils.logger import setup_logger
+
+logger = setup_logger("test_add_queue")
+
+REDIS_CLIENT = redis.Redis(host='localhost',port=6380,db=0,decode_responses=True)
 
 async def main():
-    collector = BinanceController(symbol="BTC/USDT")
+    # logger.info("🧪 开始往 Redis 泵入 5000 条随机成交数据...")
+    # base_price = 65000.0
 
-    await collector.connect()
+    # for i in range(5000):
+    #     price_change = random.uniform(-10,10)
+    #     current_price = round(base_price + price_change,2)
+    #     amount = round(random.uniform(0.001,0.5),4)
+    #     side = random.choice(['buy','sell'])
 
-    print("--- 开始获取 Binance 实时订单簿数据 (前3次更新) ---")
+    #     trade_data = {
+    #         "symbol":"BTC/USDT",
+    #         "price":current_price,
+    #         "amount":amount,
+    #         "side":side,
+    #         "timestamp": int(time.time() * 1000)
+    #     }
 
-    try:
-        # file_path = 'data/raw/Binance/spot/BTC-USDT/trades/2026/02/27/20260227_060237_936601_trade.parquet'
-        # df = pl.read_parquet(file_path)
-        # print(df.head(1))
-        params = {
-            'symbol':'BTCUSDT',
-            'fromId':'6025330808',
-            'limit':1000
-        }
-        trade_rest_data = await collector.client_rest.publicGetHistoricalTrades(params)
-        print(trade_rest_data[0])
-        
-    except Exception as e:
-        print(f"error: {e}")
-    finally:
-        print(f"正在关闭，释放资源")
-        await collector.client_rest.close()
-        
+    #     await REDIS_CLIENT.rpush('queue:trades',json.dumps(trade_data))
+
+    #     if (i + 1) % 1000 == 0:
+    #         logger.info(f"已写入 {i + 1} 条数据...")
+
+    # logger.success("✅ 5000 条测试数据已全部进入 Redis 队列！")
+    # await REDIS_CLIENT.aclose()
+    length = await REDIS_CLIENT.llen("market:trade:all")
+    print(f"当前队列长度: {length}")
 
 if __name__ == "__main__":
     asyncio.run(main())

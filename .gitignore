@@ -12,10 +12,12 @@ __pycache__/
 #OS generated files
 .DS_store
 .env
+.vscode
+.gitignore
 
 clickhouse_data/
 clickhouse_logs/
 infra/monitoring/grafana/grafana_data
 infra/monitoring/prometheus/prometheus_data
-infra/airflow/logs
+infra/airflow/logs/
 logs

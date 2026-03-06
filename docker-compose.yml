@@ -27,7 +27,7 @@ services:
           memory: 4G
 
     depends_on:
-      - redis
+      - quant_redis
       - clickhouse
 
   #控制组件
@@ -56,8 +56,11 @@ services:
     depends_on:
       - prometheus
 
-  redis:
+  quant_redis:
     image: redis:alpine
+    container_name: quant_redis_service
+    ports:
+      - "6380:6379"
     command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
     deploy:
       resources:
@@ -74,8 +77,8 @@ services:
       - "8123:8123"
       - "9000:9000"
     volumes:
-      - ./clickhouse_data:/var/lib/clickhouse
-      - ./clickhouse_logs:/var/log/clickhouse-server
+      - ./infra/clickhouse/clickhouse_data:/var/lib/clickhouse
+      - ./infra/clickhouse/clickhouse_logs:/var/log/clickhouse-server
     ulimits:
       nofile:
         soft: 262144

@@ -288,4 +288,4 @@ def download_and_unzip(binance_symbol,date_str):
         raise
 
 if __name__ == "__main__":
-    main('2026-02-26')
+    main()
