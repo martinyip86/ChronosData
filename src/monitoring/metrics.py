@@ -21,13 +21,13 @@ silence_gauge = Gauge(
 queue_size_gauge = Gauge(
     "collector_queue_size",
     "Collector Queue Size",
-    ["exchange","symbol"]
+    ["redis_key"]
 )
 
 parquet_write_duration = Histogram(
     "parquet_write_duration_seconds",
     "Parquet duration",
-    ["exchange","symbol","type"]
+    ["table"]
 )
 
 quant_data_integrity_score = Gauge(

@@ -191,6 +191,7 @@ def execute_smart_patch(symbol:str,to_patch_df:pl.DataFrame,dt_obj:datetime,file
         dt_obj.strftime('%m'),
         dt_obj.strftime('%d')
     )
+    os.makedirs(dir_name,exist_ok=True)
     file_name = f"{dt_obj.strftime('%Y%m%d')}_backfill_{int(time.time())}_{uuid.uuid4().hex}.parquet"
     file_path = os.path.join(dir_name,file_name)
     temp_path = f"{file_path}.{uuid.uuid4().hex}.tmp"

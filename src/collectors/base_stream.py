@@ -27,8 +27,8 @@ class BaseStream(ABC):
                 if not self.is_running:
                     break
                 print(f"🚨 [ERROR] {self.exchange_id} 连接异常: {e}")
-                print(f"🔄 [RETRY] 5秒后尝试重连...")
-                await asyncio.sleep(5)
+                print(f"🔄 [RETRY] 30秒后尝试重连...")
+                await asyncio.sleep(30)
         
         print(f"🏁 [EXIT] {self.exchange_id} 已停止。")
 

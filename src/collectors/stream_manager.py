@@ -3,49 +3,78 @@ import argparse
 import importlib
 from src.utils.logger import setup_logger
 from src.storage.redis_client import redis_manager
+from prometheus_client import push_to_gateway,REGISTRY
 
-logger = setup_logger("manager")
+class StreamCommander:
+    def __init__(self):
+        self.logger = setup_logger("manager",log_file="logs/collector/collector.log")
+        self.exchanges = ['binance']
+        self.symbols = ['BTC/USDT','ETH/USDT','SOL/USDT','PEPE/USDT']
+        self.data_types = ['orderbook','trades']
+        self.running_tasks = []
 
-async def main():
-    # 1. 命令行参数解析
-    parser = argparse.ArgumentParser(description="量化数据采集总指挥")
-    parser.add_argument("--exchange",type=str,required=True,help="交易所名称 (如: binance, okx)")
-    parser.add_argument("--symbol",type=str,required=True,help="交易对 (如: BTC/USDT)")
-    parser.add_argument("--type",type=str,required=True,help="orderbook,trade")
-    args = parser.parse_args()
-
-    exchange_name = args.exchange.lower()
-    symbol = args.symbol.upper()
-    type_name = args.type.lower()
-
-    redis_client = redis_manager.local_db
-
-    try:
-        module_path = f"src.collectors.providers.{exchange_name}"
+    async def run(self):
+        redis_client = redis_manager.market_db
+        self.logger.info("🇨🇭 [SYSTEM] 启动并行采集矩阵...")
         try:
-            provider_module = importlib.import_module(module_path)
+            for exchange_name in self.exchanges:
+                module_path = f"src.collectors.providers.{exchange_name}"
+                try:
+                    provider_module = importlib.import_module(module_path)
+                except Exception as e:
+                    self.logger.error(f"❌ 找不到交易所插件: {module_path}. 请检查 providers 目录下是否有该文件。")
+                    return
+
+                class_name = f"{exchange_name.capitalize()}Stream"
+                if not hasattr(provider_module,class_name):
+                    self.logger.error(f"❌ 模块 {module_path} 中没有找到类 {class_name}")
+                    return
+                
+                stream_class = getattr(provider_module,class_name)
+
+                for symbol in self.symbols:
+                    for type_name in self.data_types:
+                        self.logger.info(f"🚀 [SCHEDULE] 调度任务: {exchange_name} | {symbol} | {type_name}")
+                        collector = stream_class(symbol=symbol, redis_client=redis_client,dtype=type_name)
+                        task = asyncio.create_task(self.safe_run(collector, exchange_name, symbol, type_name))
+                        self.running_tasks.append(task)
+
+            asyncio.create_task(self.push_metrics_periodically())
+
+            if self.running_tasks:
+                await asyncio.gather(*self.running_tasks)
+            else:
+                self.logger.warning("⚠️ 没有任务被启动，请检查配置。")
         except Exception as e:
-            logger.error(f"❌ 找不到交易所插件: {module_path}. 请检查 providers 目录下是否有该文件。")
-            return
+            self.logger.error(f"💥 [CRITICAL] 运行崩溃: {e}", exc_info=True)
+        finally:
+            # 尝试优雅关闭所有任务
+            for t in self.running_tasks:
+                t.stop()
+            await redis_client.close()
+            self.logger.info("🏁 [EXIT] 采集资源已释放")
 
-        class_name = f"{exchange_name.capitalize()}Stream"
-        if not hasattr(provider_module,class_name):
-            logger.error(f"❌ 模块 {module_path} 中没有找到类 {class_name}")
-            return
-        
-        stream_class = getattr(provider_module,class_name)
-        logger.info(f"🚀 [INIT] 启动 {class_name} | 交易对: {symbol}")
+    async def safe_run(self, collector, ex, sym, typ):
+        try:
+            await collector.run()
+        except Exception as e:
+            self.logger.error(f"❌ 任务 {ex}-{sym}-{typ} 意外终止: {e}", exc_info=True)
 
-        collector = stream_class(symbol=symbol, redis_client=redis_client,dtype=type_name)
-        await collector.run()
-    except Exception as e:
-        logger.error(f"💥 [CRITICAL] 运行崩溃: {e}", exc_info=True)
-    finally:
-        await redis_client.close()
-        logger.info(f"🏁 [EXIT] {exchange_name} 采集进程已退出")
+    async def push_metrics_periodically(self):
+        while True:
+            try:
+                await asyncio.to_thread(
+                    push_to_gateway,
+                    'http://pushgateway:9091',
+                    job="market_collector",  # 整个采集矩阵作为一个 job
+                    registry=REGISTRY
+                )
+            except: pass
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
+    stream_commander = StreamCommander()
     try:
-        asyncio.run(main())
+        asyncio.run(stream_commander.run())
     except KeyboardInterrupt:
         pass

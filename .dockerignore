@@ -16,6 +16,7 @@ __pycache__
 venv/
 env/
 .pytest_cache/
+.noindex
 
 # 开发工具与 Notebook
 .ipynb_checkpoints/
