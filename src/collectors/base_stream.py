@@ -1,5 +1,7 @@
 from abc import ABC,abstractmethod
 import asyncio
+import random
+from src.utils.logger import setup_logger
 
 class BaseStream(ABC):
     def __init__(self,exchange_id,symbol,redis_client,dtype):
@@ -7,7 +9,10 @@ class BaseStream(ABC):
         self.symbol = symbol
         self.redis = redis_client
         self.dtype = dtype
+        self.logger = setup_logger(f"collector.ws.{exchange_id}",log_file=f"logs/collector/collector_{exchange_id}.log")
         self.is_running = False
+        self._stop_event = asyncio.Event()
+        self.first_message_received = False
 
     @abstractmethod
     async def connect(self):
@@ -20,19 +25,20 @@ class BaseStream(ABC):
     async def run(self):
         self.is_running = True
         print(f"🚀 [SYSTEM] {self.exchange_id} 启动: {self.symbol}")
-        while self.is_running:
+        while not self._stop_event.is_set():
+            wait_time = random.uniform(1, 5)
+            await asyncio.sleep(wait_time)
             try:
                 await self.connect()
             except Exception as e:
-                if not self.is_running:
-                    break
-                print(f"🚨 [ERROR] {self.exchange_id} 连接异常: {e}")
-                print(f"🔄 [RETRY] 30秒后尝试重连...")
-                await asyncio.sleep(30)
+                if self._stop_event.is_set(): break
+                self.logger.error(f"🚨 [ERROR] {self.exchange_id} 连接异常: {e}")
+                self.logger.info(f"🔄 [RETRY] 60秒后尝试重连...")
+                await asyncio.sleep(60)
         
-        print(f"🏁 [EXIT] {self.exchange_id} 已停止。")
+        self.logger.info(f"🏁 [EXIT] {self.exchange_id} 已停止。")
 
     
     def stop(self):
-        self.is_running = False
-        print(f"Shopping {self.exchange_id}: {self.symbol} collector......")
+        self._stop_event.set()
+        self.logger.info(f"Shopping {self.exchange_id}: {self.symbol} collector......")

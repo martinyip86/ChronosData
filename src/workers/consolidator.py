@@ -6,11 +6,11 @@ from datetime import datetime,timedelta,timezone
 
 
 class Consolidator:
-    def __init__(self,target_date:str):
+    def __init__(self,target_date:str=None):
         self.ch_client = None
         self.logger = setup_logger("workers.consolidator")
-        self.target_date = target_date or (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
-        self.exchanges = ['binance']
+        self.target_date = target_date
+        self.exchanges = ['binance','okx']
         self.symbols = ['BTC/USDT','ETH/USDT','SOL/USDT','PEPE/USDT']
         self.data_types = ['orderbook','trades']
         self.mkt_types = ['spot']
@@ -60,10 +60,10 @@ class Consolidator:
     def setup(self):
         self.ch_client = ch_manager.market_db
 
-    def daily_feature_consolidation(self,symbol:str,exchange_id:str,mkt_type:str,data_type:str):
+    def daily_feature_consolidation(self,symbol:str,exchange_id:str,mkt_type:str,data_type:str,current_date:str):
         clear_symbol = symbol.replace('/','-')
         table_name = f"market_data.v_lake_{data_type}"
-        target_date_obj = datetime.strptime(self.target_date,'%Y-%m-%d')
+        target_date_obj = datetime.strptime(current_date,'%Y-%m-%d')
         dir_path = os.path.join(
             "data/processed",
             exchange_id,
@@ -88,11 +88,11 @@ class Consolidator:
                     {self.fields[data_type]}
                 FROM {table_name}
                 WHERE pair='{clear_symbol}' AND exchange='{exchange_id}' AND mkt_type='{mkt_type}'
-                AND {self.where_date_key[data_type]}='{self.target_date}'
+                AND {self.where_date_key[data_type]}='{current_date}'
                 ORDER BY {self.sort_keys[data_type]} ASC
             """
             try:
-                self.logger.info(f"📊 开始执行日度特征物化: {symbol} @ {self.target_date}")
+                self.logger.info(f"📊 开始执行日度特征物化: {exchange_id} {symbol} @ {current_date}")
                 self.ch_client.command(sql)
                 size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 self.logger.info(f"✨ 导出成功: {file_path} | size: {size_mb:.2f}MB")
@@ -105,15 +105,26 @@ class Consolidator:
     def run(self):
         self.setup()
 
+        is_automated = self.target_date is None
+
         for exchange_id in self.exchanges:
+            if is_automated:
+                days_offset = 2 if exchange_id == 'okx' else 1
+                current_date = (datetime.now(timezone.utc) - timedelta(days=days_offset)).strftime('%Y-%m-%d')
+            else:
+                current_date = self.target_date
+
             for mkt_type in self.mkt_types:
                 for symbol in self.symbols:
                     for data_type in self.data_types:
+                        self.ch_client.command(f"DETACH TABLE market_data.lake_{data_type}_raw")
+                        self.ch_client.command(f"ATTACH TABLE market_data.lake_{data_type}_raw")
                         self.daily_feature_consolidation(
                             symbol=symbol,
                             exchange_id=exchange_id,
                             mkt_type=mkt_type,
-                            data_type=data_type
+                            data_type=data_type,
+                            current_date=current_date
                         )
 
 def consolidator(target_date: str=None):
@@ -121,5 +132,5 @@ def consolidator(target_date: str=None):
     consolidator_obj.run()
 
 if __name__ == '__main__':
-    consolidator('2026-03-08')
+    consolidator()
                             

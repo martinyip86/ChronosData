@@ -71,35 +71,37 @@ class DailyPatcher:
                 gc.collect()
                 if flag: continue
 
-                
+                gaps = self.get_ch_data(self.date_str,exchange_id,symbol)
                 
                 file_path = self.download_and_unzip(exchange_id,symbol,self.date_str)
                 if file_path and os.path.exists(file_path):
                     official_df = self._changeColumns(exchange_id,symbol,file_path)
                     validator_trades(official_df)
-
-                    max_trade_id = official_df['trade_id'].max()
-                    min_trade_id = official_df['trade_id'].min()
-
-                    ch_df = self.get_ch_data(self.date_str,exchange_id,symbol,max_trade_id,min_trade_id)
-
-                    ch_df = ch_df.with_columns([
-                        pl.col('trade_id').cast(pl.Int64)
-                    ])
-
-                    gaps_df = official_df.join(ch_df,on="trade_id",how='anti')
                     
-                    if not gaps_df.is_empty():
+                    if gaps:
                         try:
-                            self.sync_to_clickhouse(exchange_id,symbol,gaps_df)
-                            self.logger.info(f"✅ {exchange_id} {symbol} 补丁同步完成: 缝合 {len(gaps_df)} 条数据")
-                            time.sleep(1)
-                                
+                            all_patch_data = []
+
+                            for row in gaps:
+                                gap_size, prev_id, curr_id, _ = row
+
+                                patch = official_df.filter(
+                                    (pl.col('trade_id') > prev_id) & (pl.col('trade_id') < curr_id)
+                                )
+
+                                if not patch.is_empty():
+                                    all_patch_data.append(patch)
+
+                            if all_patch_data:
+                                final_df = pl.concat(all_patch_data)
+                                self.sync_to_clickhouse(exchange_id,symbol,final_df)
+                                self.logger.info(f"✅ {exchange_id} {symbol} 补丁同步完成: 缝合 {len(final_df)} 条数据")
+
                         except Exception as e:
                             self.logger.error(f"❌ 处理 {exchange_id} {symbol} 补丁时出错: {e}")
                             
 
-                    self.verify_full_integrity(exchange_id=exchange_id,symbol=symbol,official_df=official_df,file_path=file_path,max_trade_id=max_trade_id,min_trade_id=min_trade_id)
+                    self.verify_full_integrity(exchange_id=exchange_id,symbol=symbol,official_df=official_df,file_path=file_path)
 
                 # if os.path.exists(file_path):
                 #     os.remove(file_path)
@@ -109,7 +111,7 @@ class DailyPatcher:
 
                 gc.collect()
 
-    def get_ch_data(self,target_date_str:str,exchange_id,symbol,max_trade_id,min_trade_id):
+    def get_ch_data(self,target_date_str:str,exchange_id,symbol):
         dt = datetime.strptime(target_date_str,'%Y-%m-%d')
         check_start_date = (dt - timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
         check_end_date = (dt + timedelta(days=1,minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
@@ -118,21 +120,34 @@ class DailyPatcher:
 
         sql = f"""
             SELECT
-                trade_id
-            FROM 
-                trades
-            WHERE toInt64(trade_id) BETWEEN {min_trade_id} AND {max_trade_id}
-            AND exchange_id='{exchange_id}' AND symbol='{symbol}'
-            ORDER BY toInt64(trade_id) ASC
+                a.trade_id - a.prev_id - 1 AS gap_size,
+                a.prev_id,
+                a.trade_id,
+                toDateTime(a.timestamp/1000) as gap_end_time
+            FROM (
+                SELECT 
+                    toInt64(trade_id) AS trade_id,
+                    timestamp,
+                    lagInFrame(toInt64(trade_id)) OVER (PARTITION BY symbol ORDER BY toInt64(trade_id)) as prev_id
+                FROM trades
+                WHERE symbol='{symbol}' AND exchange_id='{exchange_id}'
+                    AND timestamp >= toUnixTimestamp(toDateTime('{check_start_date}')) * 1000
+                    AND timestamp <= toUnixTimestamp(toDateTime('{check_end_date}')) * 1000
+            ) AS a
+            WHERE a.prev_id > 0 
+                AND (a.trade_id - a.prev_id) > 1
+                AND toDateTime(a.timestamp/1000) >= toDateTime('{target_date_str}')
+            ORDER BY a.trade_id ASC
         """
 
-        df = pl.from_pandas(self.ch_client.query_df(sql))
-        if df.is_empty():
-            self.logger.info(f"💡 {exchange_id} {symbol} 在指定 ID 范围内无数据。")
-            # 💡 统一返回一个带有 schema 的空 DataFrame，防止 main 崩溃
-            return pl.DataFrame({"trade_id": []}, schema={"trade_id": pl.String})
-        
-        return df
+        result = self.ch_client.query(sql)
+        if result.result_rows:
+            for row in result.result_rows:
+                self.logger.warning(f"🚨 发现空洞: {exchange_id} {symbol} | 范围: {row[1]} <-> {row[2]} | 缺失: {row[0]}条")
+            return result.result_rows
+        else:
+            self.logger.info(f"✅ {exchange_id} {symbol} 数据在 ClickHouse 中完美连贯。")
+            return []
 
     def download_and_unzip(self,exchange_id,symbol:str,date_obj):
         # symbol = symbol.replace('/','').replace('-','')
@@ -239,14 +254,20 @@ class DailyPatcher:
             self.logger.error(f"🚨 ClickHouse 同步失败: {e}")
             raise
 
-    def verify_full_integrity(self,exchange_id,symbol,official_df:pl.DataFrame,file_path,max_trade_id,min_trade_id):
+    def verify_full_integrity(self,exchange_id,symbol,official_df:pl.DataFrame,file_path):
         try:
             self.logger.info(f"🔍 开始全属性核对: {exchange_id} - {symbol} @ {self.date_str}")
-            csv_df = official_df.with_columns([
-                pl.col('trade_id').cast(pl.String),
-                pl.col('price').round(8),
-                pl.col('amount').round(8)
-            ])
+            csv_df = official_df.with_columns(
+                [pl.col('trade_id').cast(pl.String)]
+            )
+            # csv_df = official_df.with_columns([
+            #     pl.col('trade_id').cast(pl.String),
+            #     pl.col('price').cast(pl.Float64).round(8),
+            #     pl.col('amount').cast(pl.Float64).round(8),
+            #     (pl.col("timestamp") // 1000).cast(pl.Int64).alias("timestamp"),
+            #     pl.when(pl.col('is_maker') == False).then(pl.lit('buy')).otherwise(pl.lit('sell')).alias('side'),
+            #     pl.col('is_maker').not_().alias('is_taker_buyer')
+            # ]).select(['trade_id','price','amount','timestamp','side','is_taker_buyer']).sort('trade_id')
 
             sql = f"""
                 SELECT
@@ -259,8 +280,9 @@ class DailyPatcher:
                 FROM
                     trades FINAL
                 WHERE exchange_id='{exchange_id}' AND symbol='{symbol}'
-                    AND toInt64(trade_id) BETWEEN {min_trade_id} AND {max_trade_id}
-                ORDER BY toInt64(trade_id) ASC
+                    AND timestamp >= toUnixTimestamp64Milli(toDateTime64('{self.date_str} 00:00:00',3,'UTC'))
+                    AND timestamp < toUnixTimestamp64Milli(toDateTime64('{self.date_str} 00:00:00',3,'UTC') + INTERVAL 1 DAYS)
+                ORDER BY trade_id ASC
             """
             ch_df = self.ch_client.query_df(sql)
             ch_df = pl.from_pandas(ch_df)

@@ -14,7 +14,8 @@ class GapFiller:
         self.redis = redis_manager.market_db
         self.logger = setup_logger('worker.gap_filler',log_file='logs/syncer/gap_filler.log')
         self.clients = {
-            'binance':{}
+            'binance':{},
+            'okx':{}
         }
 
     async def run(self):
@@ -51,6 +52,12 @@ class GapFiller:
                 'apiKey': os.getenv('BINANCE_API_KEY'),
                 'secret': os.getenv('BINANCE_SECRET'),
             })
+        elif exchange_id == 'okx':
+            return ccxt_pro.okx({
+                'enableRateLimit':True,
+                'options':{'defaultType':'spot'},
+                'aiohttp_trust_env': False
+            })
 
     async def process_job(self,job):
         symbol:str = job['symbol']
@@ -58,8 +65,7 @@ class GapFiller:
         start_id = int(job['start_id'])
         end_id = int(job['end_id'])
 
-        if exchange_id == 'binance':
-            await self.binance_filler(exchange_id,symbol,start_id,end_id)
+        await self.binance_filler(exchange_id,symbol,start_id,end_id)
         
 
     async def binance_filler(self,exchange_id,symbol:str,start_id:int,end_id:int):
@@ -70,17 +76,20 @@ class GapFiller:
 
         while current_from_id <= end_id:
             try:
-                
-                params = {
-                    'symbol':symbol.replace('/','').replace('-',''),
-                    'fromId':current_from_id,
-                    'limit':1000
-                }
+                if exchange_id == 'binance':
+                    params = {
+                        'symbol':symbol.replace('/','').replace('-',''),
+                        'fromId':current_from_id,
+                        'limit':1000
+                    }
 
-                trades = await asyncio.wait_for(
-                    client.publicGetHistoricalTrades(params),
-                    timeout=20
-                )
+                    trades = await asyncio.wait_for(
+                        client.publicGetHistoricalTrades(params),
+                        timeout=20
+                    )
+                elif exchange_id == 'okx':
+                    raw_trades = await client.fetch_trades(symbol, params={'before': str(current_from_id - 1)})
+                    trades = sorted(raw_trades, key=lambda x: int(x['id']))
 
                 for trade in trades:
                     trade_id = int(trade['id'])
@@ -88,17 +97,30 @@ class GapFiller:
                         current_from_id = end_id + 1
                         break
                     
-                    ccxt_format = {
-                        'symbol': symbol,
-                        'id': str(trade['id']),
-                        'timestamp': int(trade['time']),
-                        'side': 'sell' if trade['isBuyerMaker'] else 'buy',
-                        'price': float(trade['price']),
-                        'amount': float(trade['qty']),
-                        'cost': float(trade['quoteQty']),
-                        'is_taker_buyer': False if trade['isBuyerMaker'] else True,
-                        'info': trade # 原始数据存入 info
-                    }
+                    if exchange_id == 'binance':
+                        ccxt_format = {
+                            'symbol': symbol,
+                            'id': str(trade['id']),
+                            'timestamp': int(trade['time']),
+                            'side': 'sell' if trade['isBuyerMaker'] else 'buy',
+                            'price': float(trade['price']),
+                            'amount': float(trade['qty']),
+                            'cost': float(trade['quoteQty']),
+                            'is_taker_buyer': False if trade['isBuyerMaker'] else True,
+                            'info': trade # 原始数据存入 info
+                        }
+                    elif exchange_id == 'okx':
+                        ccxt_format = {
+                            'symbol': symbol,
+                            'id': str(trade['id']),
+                            'timestamp': int(trade['timestamp']),
+                            'side': trade['side'],
+                            'price': float(trade['price']),
+                            'amount': float(trade['amount']),
+                            'cost': float(trade['cost']),
+                            'is_taker_buyer': False if trade['side'] == 'sell' else True,
+                            'info': trade['info'] # 原始数据存入 info
+                        }
 
                     trade_obj = TradeData.from_ccxt(ccxt_format, exchange_id)
                     await self.redis.rpush('market:trades:all',trade_obj.model_dump_json())
@@ -108,7 +130,7 @@ class GapFiller:
 
                 self.logger.info(f"✅ [BACKFILL][{exchange_id}-{symbol}] 已补全 {total_patched} 条数据，当前进度 ID: {current_from_id}")
 
-                if len(trades) < 1000:
+                if len(trades) < 50:
                     current_from_id = end_id + 1 # 强制跳出 while
                     break
                 
