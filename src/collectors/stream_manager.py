@@ -8,9 +8,13 @@ from src.storage.state_watcher import StateWatcher
 from prometheus_client import push_to_gateway,REGISTRY
 
 class StreamCommander:
-    def __init__(self):
-        self.logger = setup_logger("manager",log_file="logs/collector/collector.log")
-        self.exchanges = ['binance','okx']
+    def __init__(self,target_exchange=None):
+        self.logger = setup_logger("manager",log_file=f"logs/collector/collector_{target_exchange}.log")
+        if target_exchange is not None:
+            self.exchanges = [target_exchange]
+        else:
+            self.exchanges = ['binance','okx']
+
         self.symbols = ['BTC/USDT','ETH/USDT','SOL/USDT','PEPE/USDT']
         self.data_types = ['orderbook','trades']
         self.running_tasks = []
@@ -80,7 +84,11 @@ class StreamCommander:
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
-    stream_commander = StreamCommander()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--exchange',type=str,help='指定运行的交易所 (binance/okx)')
+    args = parser.parse_args()
+    
+    stream_commander = StreamCommander(target_exchange=args.exchange)
     try:
         asyncio.run(stream_commander.run())
     except KeyboardInterrupt:

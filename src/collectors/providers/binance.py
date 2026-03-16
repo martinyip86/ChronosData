@@ -110,8 +110,9 @@ class BinanceStream(BaseStream):
                     type='orderbook'
                 ).set(silence_duration)
 
-                raise ConnectionError(f"Zombie connection detected for {self.exchange_id}-{self.symbol}")
-                
+                if silence_duration > 60:
+                    raise ConnectionError(f"Zombie connection detected for {self.exchange_id}-{self.symbol}")
+                    
             except Exception as e:
                 self.logger.error(f"🚨 [OB-ERROR] listener Exception: {e}")
                 ws_error_total.labels(
@@ -226,8 +227,9 @@ class BinanceStream(BaseStream):
                     symbol=self.symbol,
                     type='trade'
                 ).set(silence_duration)
-
-                raise ConnectionError(f"Zombie connection detected for {self.exchange_id}-{self.symbol}")
+                
+                if silence_duration > 60:
+                    raise ConnectionError(f"Zombie connection detected for {self.exchange_id}-{self.symbol}")
 
             except Exception as e:
                 self.logger.error(f"🚨 [TD-ERROR] listener Exception: {e}")

@@ -1,8 +1,8 @@
 services:
   # 这里的 collector 是你的服务名称
-  collector:
+  collector-binance:
     build: .                # 告诉它去当前目录找 Dockerfile 构建镜像
-    container_name: collector-server
+    container_name: collector-binance
     restart: always         # 关键：程序崩溃或交易所断线导致退出时，自动重启
 
     # 环境变量管理
@@ -18,16 +18,51 @@ services:
     
     environment:
       - PYTHONPATH=/app
+      - EXCHANGE=binance
 
-    command: python /app/src/collectors/stream_manager.py
+    command: python /app/src/collectors/stream_manager.py --exchange binance
 
     # 资源限制（防止 Polars 瞬间吃光服务器内存）
     deploy:
       resources:
         limits:
-          memory: 10G
+          memory: 5G
         reservations:
-          memory: 4G
+          memory: 2G
+
+    depends_on:
+      - quant_redis
+      - clickhouse
+
+  collector-okx:
+    build: .                # 告诉它去当前目录找 Dockerfile 构建镜像
+    container_name: collector-okx
+    restart: always         # 关键：程序崩溃或交易所断线导致退出时，自动重启
+
+    # 环境变量管理
+    env_file:
+      - .env                # 自动加载你的 API Key 等敏感信息
+
+    # 数据持久化（非常重要！）
+    volumes:
+      - ./data:/app/data    # 把容器内的 /app/data 映射到你电脑的 ./data 文件夹
+      - ./logs:/app/logs    # 映射日志，方便排查
+      - ./src:/app/src
+      # - ./main.py:/app/main.py
+    
+    environment:
+      - PYTHONPATH=/app
+      - EXCHANGE=okx
+
+    command: python /app/src/collectors/stream_manager.py --exchange okx
+
+    # 资源限制（防止 Polars 瞬间吃光服务器内存）
+    deploy:
+      resources:
+        limits:
+          memory: 5G
+        reservations:
+          memory: 2G
 
     depends_on:
       - quant_redis
