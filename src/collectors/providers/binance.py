@@ -12,6 +12,7 @@ class BinanceStream(BaseStream):
     def __init__(self,exchange,symbol,redis_client,dtype):
         super().__init__(exchange,symbol,redis_client,dtype)
         self.client = None
+        self.mkt_type = 'spot'
         self.last_trade_id_key = f"last_trade_id:{self.exchange_id}:{self.symbol}"
         self.dedup_prefix = f"seen:{self.exchange_id}:{self.symbol}"
         self.last_id_mem = None
@@ -19,7 +20,7 @@ class BinanceStream(BaseStream):
     def _create_client(self):
         config = {
             'enableRateLimit':True,
-            'options':{'defaultType':'spot'}
+            'options':{'defaultType':self.mkt_type}
         }
         if self.exchange_id == 'binance':
             return ccxt_pro.binance(config)
@@ -78,6 +79,7 @@ class BinanceStream(BaseStream):
                 tick = TickData(
                     symbol=self.symbol,
                     exchange_id=self.exchange_id,
+                    mkt_type=self.mkt_type,
                     bid_price=orderbook['bids'][0][0],
                     bid_volume=orderbook['bids'][0][1],
                     ask_price=orderbook['asks'][0][0],
@@ -183,7 +185,7 @@ class BinanceStream(BaseStream):
                 max_curr_id = self.last_id_mem
 
                 for trade_dict in trades_list:
-                    trade = TradeData.from_ccxt(trade_dict,self.exchange_id)
+                    trade = TradeData.from_ccxt(trade_dict,self.exchange_id,self.mkt_type)
 
                     curr_id = int(trade.trade_id)
 

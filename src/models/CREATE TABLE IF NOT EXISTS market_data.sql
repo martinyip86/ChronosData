@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS market_data.orderbook (
     ask_volumes Array(Float64),
     timestamp Int64,
     local_timestamp Int64,
-    created_at DateTime64(3) DEFAULT now64()
+    created_at DateTime64(3,'UTC') DEFAULT now64()
 )
 ENGINE = ReplacingMergeTree(local_timestamp)
 PARTITION BY toYYYYMMDD(fromUnixTimestamp64Milli(local_timestamp))

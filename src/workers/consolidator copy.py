@@ -62,7 +62,7 @@ class Consolidator:
 
     def daily_feature_consolidation(self,symbol:str,exchange_id:str,mkt_type:str,data_type:str,current_date:str):
         clear_symbol = symbol.replace('/','-')
-        table_name = f"market_data.{data_type}"
+        table_name = f"market_data.v_lake_{data_type}"
         target_date_obj = datetime.strptime(current_date,'%Y-%m-%d')
         dir_path = os.path.join(
             "data/processed",

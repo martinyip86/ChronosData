@@ -15,6 +15,7 @@ __pycache__/
 .vscode/
 .gitignore
 .noindex
+.yml
 
 clickhouse_data/
 clickhouse_logs/

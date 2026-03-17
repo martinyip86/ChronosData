@@ -6,6 +6,7 @@ from datetime import datetime
 
 class TickData(BaseModel):
     symbol:str = Field(...,description="BTC/USDT")
+    mkt_type:str = Field(...,description="spot")
     bid_volume:float = Field(...,description="bid volume")
     bid_price:float = Field(...,description="bid price")
     ask_volume:float = Field(...,description="ask volume")
@@ -22,6 +23,7 @@ class TickData(BaseModel):
 class TradeData(BaseModel):
     symbol:str = Field(...,description="BTC/USDT")
     exchange_id:str = Field(...,description="Binance, OKX, etc.")
+    mkt_type:str = Field(...,description="spot")
     trade_id:str = Field(...,description="成交 Id")
     timestamp:int = Field(...,description="交易所原始毫秒时间戳")
     side:str = Field(...,description="buy/sell")
@@ -33,7 +35,7 @@ class TradeData(BaseModel):
     local_timestamp:int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
 
     @classmethod
-    def from_ccxt(cls,trade:dict,exchange:str):
+    def from_ccxt(cls,trade:dict,exchange:str,mkt_type:str):
         info = trade.get('info', {})
         
         if exchange.lower() == 'binance':
@@ -53,6 +55,7 @@ class TradeData(BaseModel):
         return cls(
             symbol = trade['symbol'],
             exchange_id = exchange,
+            mkt_type = mkt_type,
             trade_id = str(trade['id']),
             timestamp = int(trade.get('timestamp')) or int(time.time() * 1000),
             side = trade['side'],
