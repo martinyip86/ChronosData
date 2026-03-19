@@ -185,6 +185,7 @@ class DailyPatcher:
             return df.with_columns([
                 pl.lit(exchange_id).alias('exchange_id'),
                 pl.lit(symbol).alias('symbol'),
+                pl.lit('spot').alias('mkt_type'),
                 pl.col('trade_id').cast(pl.Int64),
                 pl.col('price').cast(pl.Float64),
                 pl.col('amount').cast(pl.Float64),
@@ -198,6 +199,7 @@ class DailyPatcher:
             return df.with_columns([
                 pl.lit(exchange_id).alias('exchange_id'),
                 pl.lit(symbol).alias('symbol'),
+                pl.lit('spot').alias('mkt_type'),
                 pl.col('trade_id').cast(pl.Int64),
                 pl.col('price').cast(pl.Float64),
                 pl.col('size').cast(pl.Float64).alias('amount'),
@@ -209,9 +211,9 @@ class DailyPatcher:
 
 
     def sync_to_clickhouse(self,exchange_id,symbol,df:pl.DataFrame):
-        formatted_df = df.with_columns(
-            [pl.col('trade_id').cast(pl.String)]
-        )
+        formatted_df = df.with_columns([
+            pl.col('trade_id').cast(pl.String)
+        ])
         # formatted_df = df.with_columns([
         #     pl.lit(self.exchange_id).alias('exchange_id'),
         #     pl.lit(symbol).alias('symbol'),

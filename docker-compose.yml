@@ -52,9 +52,8 @@ services:
     
     environment:
       - PYTHONPATH=/app
-      - EXCHANGE=okx
 
-    command: python /app/src/collectors/stream_manager.py --exchange okx
+    command: python /app/src/workers/sync_db.py
 
     # 资源限制（防止 Polars 瞬间吃光服务器内存）
     deploy:

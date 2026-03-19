@@ -20,8 +20,7 @@ class Consolidator:
                     symbol,
                     mkt_type,
                     exchange_id,
-                    orderbook_date,
-                    hour,
+                    fromUnixTimestamp64Milli(timestamp,'UTC') AS dt,
                     (bid_prices[1] * ask_volumes[1] + ask_prices[1] * bid_volumes[1]) / nullIf(bid_volumes[1] + ask_volumes[1],0) AS micro_price,
                     (bid_volumes[1] - ask_volumes[1]) / nullIf(bid_volumes[1] + ask_volumes[1],0) AS imbalance,
                     ask_prices[1] - bid_prices[1] AS spread,
@@ -35,8 +34,7 @@ class Consolidator:
                 symbol,
                 mkt_type,
                 exchange_id,
-                trade_date,
-                hour,
+                fromUnixTimestamp64Milli(timestamp,'UTC') AS dt,
                 price,
                 amount,
                 price * amount AS turnover,
@@ -51,10 +49,6 @@ class Consolidator:
         self.sort_keys = {
             'orderbook': 'nonce',
             'trades': 'trade_id'
-        }
-        self.where_date_key = {
-            'orderbook': 'orderbook_date',
-            'trades': 'trade_date'
         }
 
     def setup(self):
@@ -82,13 +76,18 @@ class Consolidator:
                 os.remove(file_path)
 
         if not os.path.exists(file_path):
+            start_ms = int(target_date_obj.replace(tzinfo=timezone.utc).timestamp() * 1000)
+            end_ms = start_ms + (24 * 60 * 60 * 1000) - 1
             sql = f"""
                 INSERT INTO FUNCTION file('{file_path}','Parquet')
                 SELECT
                     {self.fields[data_type]}
-                FROM {table_name}
-                WHERE pair='{clear_symbol}' AND exchange='{exchange_id}' AND mkt_type='{mkt_type}'
-                AND {self.where_date_key[data_type]}='{current_date}'
+                FROM {table_name} FINAL
+                WHERE symbol='{symbol}' 
+                    AND exchange_id='{exchange_id}' 
+                    AND mkt_type='{mkt_type}'
+                    AND timestamp >= {start_ms}
+                    AND timestamp <= {end_ms}
                 ORDER BY {self.sort_keys[data_type]} ASC
             """
             try:
@@ -117,8 +116,6 @@ class Consolidator:
             for mkt_type in self.mkt_types:
                 for symbol in self.symbols:
                     for data_type in self.data_types:
-                        self.ch_client.command(f"DETACH TABLE market_data.lake_{data_type}_raw")
-                        self.ch_client.command(f"ATTACH TABLE market_data.lake_{data_type}_raw")
                         self.daily_feature_consolidation(
                             symbol=symbol,
                             exchange_id=exchange_id,

@@ -8,6 +8,7 @@ __pycache__/
 *.parquet
 *.log
 *.tmp
+*.backup
 
 #OS generated files
 .DS_store
@@ -16,10 +17,12 @@ __pycache__/
 .gitignore
 .noindex
 .yml
+.sql
 
 clickhouse_data/
 clickhouse_logs/
 infra/monitoring/grafana/grafana_data
 infra/monitoring/prometheus/prometheus_data
 infra/airflow/logs/
-logs
+logs/
+tests/

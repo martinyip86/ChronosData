@@ -28,19 +28,6 @@ class StreamCommander:
         await asyncio.sleep(2)
         try:
             for exchange_name in self.exchanges:
-                # module_path = f"src.collectors.providers.{exchange_name}"
-                # try:
-                #     provider_module = importlib.import_module(module_path)
-                # except Exception as e:
-                #     self.logger.error(f"❌ 找不到交易所插件: {module_path}. 请检查 providers 目录下是否有该文件。")
-                #     return
-
-                # class_name = f"{exchange_name.capitalize()}Stream"
-                # if not hasattr(provider_module,class_name):
-                #     self.logger.error(f"❌ 模块 {module_path} 中没有找到类 {class_name}")
-                #     return
-                
-                # stream_class = getattr(provider_module,class_name)
 
                 for symbol in self.symbols:
                     for type_name in self.data_types:

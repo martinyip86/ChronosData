@@ -2,6 +2,7 @@ import asyncio
 import ccxt.pro as ccxt_pro
 import time
 import json
+import gc
 from src.collectors.base_stream import BaseStream
 from src.storage.ch_client import ch_manager
 from src.models.schema import TickData,TradeData
