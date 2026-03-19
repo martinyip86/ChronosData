@@ -33,6 +33,7 @@ services:
     depends_on:
       - quant_redis
       - clickhouse
+    condition: service_healthy
 
   collector-okx:
     build: .                # 告诉它去当前目录找 Dockerfile 构建镜像
@@ -66,6 +67,7 @@ services:
     depends_on:
       - quant_redis
       - clickhouse
+    condition: service_healthy
 
   syncer:
     build: .
@@ -95,6 +97,7 @@ services:
     depends_on:
       - quant_redis
       - clickhouse
+    condition: service_healthy
 
   gap_filler:
     build: .
@@ -123,6 +126,7 @@ services:
     depends_on:
       - quant_redis
       - clickhouse
+    condition: service_healthy
 
   #控制组件
   prometheus:
@@ -165,8 +169,8 @@ services:
     image: clickhouse/clickhouse-server:latest
     container_name: clickhouse-server
     environment:
-      - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=martin1510
+      - CLICKHOUSE_USER=${CLICKHOUSE_USERNAME}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     ports:
       - "8123:8123"
       - "9000:9000"
