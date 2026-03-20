@@ -44,13 +44,13 @@ with DAG(
         }
     )
 
-    archiving_task = PythonOperator(
-        task_id='archive_to_parquet',
-        python_callable=run_archive_logic,
-        op_kwargs={
-            "target_date": "{{ macros.ds_add(ds, -1) }}", # 归档日期必须与补漏日期完全一致
-        }
-    )
+    # archiving_task = PythonOperator(
+    #     task_id='archive_to_parquet',
+    #     python_callable=run_archive_logic,
+    #     op_kwargs={
+    #         "target_date": "{{ macros.ds_add(ds, -1) }}",
+    #     }
+    # )
 
     consolidatoring_task = PythonOperator(
         task_id='consolidator_to_daily_processed_parquet',
@@ -60,4 +60,5 @@ with DAG(
         }
     )
 
-    patching_task >> archiving_task >> consolidatoring_task
+    # patching_task >> archiving_task >> consolidatoring_task
+    patching_task >> consolidatoring_task

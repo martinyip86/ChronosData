@@ -8,8 +8,16 @@ from src.storage.state_watcher import StateWatcher
 from prometheus_client import push_to_gateway,REGISTRY
 
 class StreamCommander:
+    """
+    Market Data Orchestrator.
+    Manages the lifecycle of multiple exchange collectors, handling parallel 
+    execution, resource allocation, and Prometheus metric pushing.
+    """
     def __init__(self,target_exchange=None):
+        # Initialize logger with exchange-specific scoping
         self.logger = setup_logger("manager",log_file=f"logs/collector/collector_{target_exchange}.log")
+
+        # Define ingestion scope
         if target_exchange is not None:
             self.exchanges = [target_exchange]
         else:
@@ -20,8 +28,13 @@ class StreamCommander:
         self.running_tasks = []
 
     async def run(self):
+        """
+        Starts the parallel ingestion matrix and monitoring tasks.
+        """
         redis_client = redis_manager.market_db
-        self.logger.info("🇨🇭 [SYSTEM] 启动并行采集矩阵...")
+        self.logger.info("🇨🇭 [SYSTEM] Initializing parallel ingestion matrix...")
+
+        # State Recovery & Sequence Synchronization
         watcher_tak = asyncio.create_task(StateWatcher.run(interval=15))
         self.running_tasks.append(watcher_tak)
 
@@ -31,48 +44,57 @@ class StreamCommander:
 
                 for symbol in self.symbols:
                     for type_name in self.data_types:
-                        self.logger.info(f"🚀 [SCHEDULE] 调度任务: {exchange_name} | {symbol} | {type_name}")
+                        self.logger.info(f"🚀 [SCHEDULE] Deploying task: {exchange_name} | {symbol} | {type_name}")
+
+                        # Initialize collector instance
                         collector = BinanceStream(exchange=exchange_name,symbol=symbol, redis_client=redis_client,dtype=type_name)
+
+                        # Wrap in safe_run to prevent a single task failure from crashing the entire matrix
                         task = asyncio.create_task(self.safe_run(collector, exchange_name, symbol, type_name))
                         self.running_tasks.append(task)
 
+            # Start periodic metrics push to Prometheus Gateway
             asyncio.create_task(self.push_metrics_periodically())
 
             if self.running_tasks:
-                self.logger.info("开始执行协程...")
+                self.logger.info("⚡ [EXECUTE] Matrix operational. Processing event loops...")
                 await asyncio.gather(*self.running_tasks)
             else:
-                self.logger.warning("⚠️ 没有任务被启动，请检查配置。")
+                self.logger.warning("⚠️ [WARN] No tasks scheduled. Please check configuration.")
         except Exception as e:
-            self.logger.error(f"💥 [CRITICAL] 运行崩溃: {e}", exc_info=True)
+            self.logger.error(f"💥 [CRITICAL] Orchestrator crashed: {e}", exc_info=True)
         finally:
-            # 尝试优雅关闭所有任务
+            # Graceful shutdown: cancel all coroutines and release resources
+            self.logger.info("🛑 [SHUTDOWN] Initiating graceful shutdown...")
             for t in self.running_tasks:
-                t.cancel() # 取消协程
+                t.cancel()
             await redis_client.close()
-            self.logger.info("🏁 [EXIT] 采集资源已释放")
+            self.logger.info("🏁 [EXIT] All resources released.")
 
     async def safe_run(self, collector, ex, sym, typ):
         try:
             await collector.run()
         except Exception as e:
-            self.logger.error(f"❌ 任务 {ex}-{sym}-{typ} 意外终止: {e}", exc_info=True)
+            self.logger.error(f"❌ [TASK ERROR] {ex}-{sym}-{typ} terminated unexpectedly: {e}", exc_info=True)
 
     async def push_metrics_periodically(self):
+        """
+        Background worker to push local metrics to Prometheus Pushgateway.
+        """
         while True:
             try:
                 await asyncio.to_thread(
                     push_to_gateway,
                     'http://pushgateway:9091',
-                    job="market_collector",  # 整个采集矩阵作为一个 job
+                    job="market_collector",
                     registry=REGISTRY
                 )
             except: pass
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--exchange',type=str,help='指定运行的交易所 (binance/okx)')
+    parser = argparse.ArgumentParser(description="Hydra-Feed Stream Orchestrator")
+    parser.add_argument('--exchange',type=str,help='Target exchange (e.g., binance/okx)')
     args = parser.parse_args()
     
     stream_commander = StreamCommander(target_exchange=args.exchange)

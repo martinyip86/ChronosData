@@ -6,6 +6,11 @@ from datetime import datetime,timedelta,timezone
 
 
 class Consolidator:
+    """
+    Data ETL & Feature Engineering Engine.
+    Converts raw ClickHouse records into optimized Parquet files while 
+    calculating core alpha features for quantitative research.
+    """
     def __init__(self,target_date:str=None):
         self.ch_client = None
         self.logger = setup_logger("workers.consolidator")
@@ -52,12 +57,18 @@ class Consolidator:
         }
 
     def setup(self):
+        """Initializes database connection."""
         self.ch_client = ch_manager.market_db
 
     def daily_feature_consolidation(self,symbol:str,exchange_id:str,mkt_type:str,data_type:str,current_date:str):
+        """
+        Materializes daily raw data into professional Parquet format for backtesting.
+        """
         clear_symbol = symbol.replace('/','-')
         table_name = f"market_data.{data_type}"
         target_date_obj = datetime.strptime(current_date,'%Y-%m-%d')
+
+        # Standardized hierarchical storage structure
         dir_path = os.path.join(
             "data/processed",
             exchange_id,
@@ -70,6 +81,8 @@ class Consolidator:
             dir_path,
             f"{target_date_obj.strftime('%Y%m%d')}.parquet"
         )
+
+        # Cleanup corrupt/empty files from previous runs
         if os.path.exists(file_path):
             size_mb = os.path.getsize(file_path) / (1024 * 1024)
             if size_mb < 1:
@@ -78,6 +91,8 @@ class Consolidator:
         if not os.path.exists(file_path):
             start_ms = int(target_date_obj.replace(tzinfo=timezone.utc).timestamp() * 1000)
             end_ms = start_ms + (24 * 60 * 60 * 1000) - 1
+
+            # Leveraging ClickHouse S3/File integration for high-speed export
             sql = f"""
                 INSERT INTO FUNCTION file('{file_path}','Parquet')
                 SELECT
@@ -91,22 +106,24 @@ class Consolidator:
                 ORDER BY {self.sort_keys[data_type]} ASC
             """
             try:
-                self.logger.info(f"📊 开始执行日度特征物化: {exchange_id} {symbol} @ {current_date}")
+                self.logger.info(f"📊 Consolidating features: {exchange_id} {symbol} @ {current_date}")
                 self.ch_client.command(sql)
                 size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                self.logger.info(f"✨ 导出成功: {file_path} | size: {size_mb:.2f}MB")
+                self.logger.info(f"✨ Export successful: {file_path} | Size: {size_mb:.2f}MB")
             except Exception as e:
-                self.logger.error(f"导出失败: {e}")
+                self.logger.error(f"❌ Export failed: {e}")
                 raise
 
-        gc.collect()
+        gc.collect() # Explicit garbage collection to manage large memory frames
 
     def run(self):
+        """Main execution flow for daily ETL."""
         self.setup()
 
         is_automated = self.target_date is None
 
         for exchange_id in self.exchanges:
+            # Handle time-zone offsets for different exchanges
             if is_automated:
                 days_offset = 2 if exchange_id == 'okx' else 1
                 current_date = (datetime.now(timezone.utc) - timedelta(days=days_offset)).strftime('%Y-%m-%d')
@@ -125,6 +142,7 @@ class Consolidator:
                         )
 
 def consolidator(target_date: str=None):
+    """EntryPoint for Task Scheduler."""
     consolidator_obj = Consolidator(target_date)
     consolidator_obj.run()
 

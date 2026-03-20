@@ -11,6 +11,11 @@ from prometheus_client import push_to_gateway,REGISTRY,generate_latest
 from src.monitoring.metrics import silence_gauge,parquet_write_duration,queue_size_gauge
 
 class DBsyncer():
+    """
+    High-Performance Data Persistence Engine.
+    Consumes market data streams from Redis and performs batch inserts into ClickHouse.
+    Implements a dual-trigger flush mechanism (Batch Size & Time Interval).
+    """
     def __init__(self):
         self.redis = redis_manager.market_db
         self.ch = ch_manager.market_db
@@ -33,6 +38,7 @@ class DBsyncer():
 
         self.schemas = {}
 
+        # Pre-fetch table schemas to ensure column alignment during insertion
         for config in self.config.values():
             table_schema = self.ch.query(f"DESCRIBE TABLE {config['table']}")
             valid_columns = table_schema.result_rows
@@ -40,6 +46,9 @@ class DBsyncer():
 
 
     async def storage_worker(self,dtype):
+        """
+        Main worker loop for a specific data type (trades or orderbook).
+        """
         conf = self.config[dtype]
         redis_key = conf['redis_key']
         table = conf['table']
@@ -48,75 +57,91 @@ class DBsyncer():
         buffer = []
         last_flush = time.time()
 
-        self.logger.info(f"✅ {dtype} 同步协程已启动，监听: {redis_key}")
+        self.logger.info(f"✅ [WORKER-START] Syncer active for {dtype}. Listening on: {redis_key}")
 
         while True:
             try:
+                # Monitor Redis queue depth for Prometheus metrics
                 q_len = await self.redis.llen(redis_key)
                 queue_size_gauge.labels(
                     redis_key=redis_key
                 ).set(q_len)
+
+                # Batch POP from Redis to minimize IO roundtrips
                 data_list = await self.redis.execute_command('LPOP',redis_key,batch_size)
 
                 if data_list:
                     for item in data_list:
                         clear_item = json.loads(item)
+                        # Deserialize JSON objects
                         buffer.append(clear_item)
                 else:
+                    # Adaptive polling: sleep if queue is empty
                     await asyncio.sleep(0.5)
                     continue
+                    # Check for time-based flush even if no new data arrived
 
                 now = time.time()
+                # Trigger Flush Condition: Buffer is full OR Time limit exceeded
                 if len(buffer) >= batch_size or (now - last_flush > flush_interval and buffer):
                     await self._flush(buffer,table)
                     buffer.clear()
                     last_flush = time.time()
 
             except Exception as e:
-                print(f"获取错误：{e}")
-                pass
+                print(f"❌ [INGESTION-ERROR] Failed to fetch from Redis: {e}")
+                await asyncio.sleep(1) # Backoff on error
 
     async def _flush(self,data,table_name):
+        """
+        Executes high-speed batch insertion into ClickHouse.
+        """
         if not data:
             return
 
         start = time.time()
-
         final_cols = self.schemas[table_name]
+
+        # Prepare rows for insertion using list comprehension for maximum performance
         rows = [None] * len(data)
         for i, row_dict in enumerate(data):
-            # 使用列表推导式配合 get，比显式循环快 20%
             rows[i] = [row_dict.get(col) for col in final_cols]
+
         try:
+            # Optimized ClickHouse insertion settings
             self.ch.insert(
                 table=table_name,
                 data=rows,
                 column_names=final_cols,
                 settings={
-                    'insert_distributed_sync':0,
+                    'insert_distributed_sync':0, # Async insert for better throughput
                     'max_insert_block_size':100000
                 }
             )
             duration = time.time()-start
-            self.logger.info(f"🚢 [{table_name}] 写入 {len(data)} 条，耗时 {duration:.3f}s")
+            self.logger.info(f"🚢 [FLUSH] Table: {table_name} | Rows: {len(data)} | Latency: {duration:.3f}s")
             parquet_write_duration.labels(
                 table=table_name
             ).observe(duration)
 
+            # Health warning if DB ingestion is lagging behind data stream
             if duration > self.config[table_name]['flush_interval'] * 0.8:
-                self.logger.warning(f"⚠️ [{table_name}] 写入压力接近极限！")
+                self.logger.warning(f"⚠️ [PRESSURE] DB write latency is nearing limit for {table_name}!")
         except Exception as e:
-            self.logger.error(f"🔥 [{table_name}] 写入失败: {e}")
+            self.logger.error(f"🔥 [DB-CRITICAL] Failed to insert into {table_name}: {e}")
 
     async def run(self):
+        """Orchestrates parallel syncer workers."""
         asyncio.create_task(self.push_metrics_periodically())
         
+        # Run trades and orderbook workers concurrently
         await asyncio.gather(
             self.storage_worker('trades'),
             self.storage_worker('orderbook')
         )
 
     async def push_metrics_periodically(self):
+        """Background task for Prometheus Pushgateway synchronization."""
         while True:
             try:
                 await asyncio.to_thread(
@@ -130,4 +155,7 @@ class DBsyncer():
 
 if __name__ == "__main__":
     db_syncer = DBsyncer()
-    asyncio.run(db_syncer.run())
+    try:
+        asyncio.run(db_syncer.run())
+    except KeyboardInterrupt:
+        pass

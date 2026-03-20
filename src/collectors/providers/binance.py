@@ -10,15 +10,22 @@ from prometheus_client import push_to_gateway,REGISTRY,generate_latest
 from src.monitoring.metrics import ws_reconnect_total,ws_error_total,silence_gauge,parquet_write_duration,queue_size_gauge
 
 class BinanceStream(BaseStream):
+    """
+    Binance-specific WebSocket collector.
+    Implements real-time Orderbook and Trade stream ingestion with 
+    built-in gap detection and Prometheus monitoring.
+    """
     def __init__(self,exchange,symbol,redis_client,dtype):
         super().__init__(exchange,symbol,redis_client,dtype)
         self.client = None
         self.mkt_type = 'spot'
+        # Keys for state management and deduplication
         self.last_trade_id_key = f"last_trade_id:{self.exchange_id}:{self.symbol}"
         self.dedup_prefix = f"seen:{self.exchange_id}:{self.symbol}"
         self.last_id_mem = None
 
     def _create_client(self):
+        """Initializes the exchange client using ccxt.pro."""
         config = {
             'enableRateLimit':True,
             'options':{'defaultType':self.mkt_type}
@@ -29,6 +36,10 @@ class BinanceStream(BaseStream):
             return ccxt_pro.okx(config)
 
     async def connect(self):
+        """
+        Entry point for the connection lifecycle. 
+        Manages high-level dispatching to specific stream handlers.
+        """
         if self.client:
             await self.client.close()
 
@@ -47,18 +58,22 @@ class BinanceStream(BaseStream):
 
 
     async def _watch_orderbook(self):
+        """
+        Ingests real-time L2 Orderbook data (Top 20 bids/asks).
+        Includes silence detection to trigger reconnections during data stalls.
+        """
         last_active_time = time.time()
 
         while not self._stop_event.is_set():
             try:
+                # 20s timeout to detect 'zombie' sockets that are open but silent
                 orderbook = await asyncio.wait_for(
                     self.client.watch_order_book(self.symbol),
                     timeout=20
                 )
 
                 if not self.first_message_received:
-                    self.logger.info(f"✅ [RECONNECTED] {self.exchange_id}-{self.symbol}-orderbook 链路已激活，收到首批数据。")
-                    # 可以在这里更新 Prometheus 指标
+                    self.logger.info(f"✅ [RECONNECTED] {self.exchange_id}-{self.symbol}-orderbook active.")
                     silence_gauge.labels(
                         exchange=self.exchange_id,
                         symbol=self.symbol,
@@ -67,6 +82,7 @@ class BinanceStream(BaseStream):
                     self.first_message_received = True
 
                 last_active_time = time.time()
+                # Reset Prometheus silence gauge
                 silence_gauge.labels(
                     exchange=self.exchange_id,
                     symbol=self.symbol,
@@ -75,6 +91,8 @@ class BinanceStream(BaseStream):
                 
                 raw_ts = orderbook.get('timestamp')
                 ts = raw_ts if raw_ts is not None else int(time.time() * 1000)
+
+                # Extract Top 20 depth for intensive quantitative analysis
                 top_20_bids = orderbook['bids'][:20]
                 top_20_asks = orderbook['asks'][:20]
                 tick = TickData(
@@ -93,8 +111,9 @@ class BinanceStream(BaseStream):
                     timestamp=int(ts),
                     exchange_time=int(ts)
                 )
+
+                # Push to Redis for downstream processing by Syncer/DB workers
                 await self.redis.rpush("market:ticks:all",tick.model_dump_json())
-                # self.logger.info(f"📊 [OB-PRODUCER] {self.symbol} | 已写入| 实时价格: {tick.bid_price}")
             except asyncio.TimeoutError:
                 self.first_message_received = False
                 self.logger.warning(f"{self.exchange_id}:{self.symbol}:orderbook_ws timeout,reconnecting...")
@@ -104,9 +123,8 @@ class BinanceStream(BaseStream):
                 ).inc()
 
                 silence_duration = time.time() - last_active_time
-                self.logger.warning(f"🤫 {self.exchange_id}-{self.symbol} 静默中: {silence_duration:.1f}s")
+                self.logger.warning(f"🤫 {self.exchange_id}-{self.symbol} silence duration: {silence_duration:.1f}s")
                 
-                # 更新指标
                 silence_gauge.labels(
                     exchange=self.exchange_id,
                     symbol=self.symbol,
@@ -117,7 +135,7 @@ class BinanceStream(BaseStream):
                     raise ConnectionError(f"Zombie connection detected for {self.exchange_id}-{self.symbol}")
                     
             except Exception as e:
-                self.logger.error(f"🚨 [OB-ERROR] listener Exception: {e}")
+                self.logger.error(f"🚨 [OB-ERROR] Exception in Orderbook loop: {e}")
                 ws_error_total.labels(
                     exchange=self.exchange_id,
                     symbol=self.symbol
@@ -126,35 +144,20 @@ class BinanceStream(BaseStream):
             
 
     async def _watch_trade(self):
-        # last_id = await self.redis.get(self.last_trade_id_key)
-        # if not last_id:
-        #     try:
-        #         # 建议：由于 ClickHouse 查询是同步 IO，建议放在 to_thread 里跑，防止卡死其他协程
-        #         ch_client = ch_manager.market_db
-        #         sql = f"""
-        #             SELECT MAX(trade_id) FROM trades 
-        #             WHERE exchange_id='{self.exchange_id}' AND symbol='{self.symbol}'
-        #         """
-        #         # 使用 to_thread 防止查询时的网络延迟卡住整个采集器
-        #         result = await asyncio.to_thread(ch_client.query, sql)
+        """
+        Ingests real-time Trade data with intelligent Gap Detection.
+        Synchronizes sequence state with Redis to ensure data integrity.
+        """
 
-        #         if result.result_rows and result.result_rows[0][0] is not None:
-        #             last_id = result.result_rows[0][0]
-        #         else:
-        #             last_id = None
-        #     except Exception as e:
-        #         self.logger.error(f"❌ 从 ClickHouse 初始化 last_id 失败: {e}")
-        #         last_id = None
-        #         raise e
-        #     finally:
-        #         ch_client.close()
         redis_hex_trade_id_key = f"cache:{self.exchange_id}:last_trade_id"
+
+        # Recover last processed trade_id from Redis cache
         last_id = await self.redis.hget(redis_hex_trade_id_key,self.symbol)
         if last_id:
             self.last_id_mem = int(last_id)
-            self.logger.info(f"📥 [INIT] {self.exchange_id}-{self.symbol} 从 Redis 恢复起点: {self.last_id_mem}")
+            self.logger.info(f"📥 [INIT] {self.exchange_id}-{self.symbol} recovered start point: {self.last_id_mem}")
         else:
-            self.logger.warning(f"⚠️ [INIT] Redis 中未找到 {self.exchange_id}-{self.symbol} 的状态，将从实时流首条数据开始。")
+            self.logger.warning(f"⚠️ [INIT] No state found in Redis. Starting from live head.")
             self.last_id_mem = None
         last_active_time = time.time()
 
@@ -166,13 +169,7 @@ class BinanceStream(BaseStream):
                 )
 
                 if not self.first_message_received:
-                    self.logger.info(f"✅ [RECONNECTED] {self.exchange_id}-{self.symbol}-trades 链路已激活，收到首批数据。")
-                    # 可以在这里更新 Prometheus 指标
-                    silence_gauge.labels(
-                        exchange=self.exchange_id,
-                        symbol=self.symbol,
-                        type='trade'
-                    ).set(0)
+                    self.logger.info(f"✅ [RECONNECTED] {self.exchange_id}-{self.symbol}-trades active.")
                     self.first_message_received = True
 
                 last_active_time = time.time()
@@ -190,6 +187,8 @@ class BinanceStream(BaseStream):
 
                     curr_id = int(trade.trade_id)
 
+                    # --- CORE LOGIC: Gap Detection ---
+                    # If current ID jumps over the expected sequence, trigger a Gap-Fill job.
                     if self.last_id_mem is not None:
                         if curr_id > self.last_id_mem + 1:
                             gap_job = {
@@ -199,8 +198,9 @@ class BinanceStream(BaseStream):
                                 'end_id':curr_id - 1
                             }
                             await self.redis.rpush("queue:gap_fill_jobs",json.dumps(gap_job))
-                            self.logger.warning(f"🕳️ [GAP] {self.exchange_id}-{self.symbol} 发现空洞: {self.last_id_mem} -> {curr_id}")
+                            self.logger.warning(f"🕳️ [GAP] Sequence jump detected: {self.last_id_mem} -> {curr_id}")
 
+                    # Update local sequence tracking
                     if self.last_id_mem is None or curr_id > self.last_id_mem:
                         self.last_id_mem = curr_id
                         max_curr_id = curr_id
@@ -208,7 +208,7 @@ class BinanceStream(BaseStream):
                     batch_data.append(trade.model_dump_json())
 
                 if batch_data:
-                    #后补即时反补函数
+                    # Atomic storage update: push trades and update the 'Source of Truth' sequence ID
                     await self.redis.rpush(f"market:trades:all",*batch_data)
                     await self.redis.hset(redis_hex_trade_id_key, self.symbol, max_curr_id)
                     await self.redis.set(self.last_trade_id_key,max_curr_id)
@@ -222,9 +222,8 @@ class BinanceStream(BaseStream):
                 ).inc()
 
                 silence_duration = time.time() - last_active_time
-                self.logger.warning(f"🤫 {self.symbol} 静默中: {silence_duration:.1f}s")
+                self.logger.warning(f"🤫 {self.symbol} silence duration: {silence_duration:.1f}s")
                 
-                # 更新指标
                 silence_gauge.labels(
                     exchange=self.exchange_id,
                     symbol=self.symbol,
@@ -235,7 +234,7 @@ class BinanceStream(BaseStream):
                     raise ConnectionError(f"Zombie connection detected for {self.exchange_id}-{self.symbol}")
 
             except Exception as e:
-                self.logger.error(f"🚨 [TD-ERROR] listener Exception: {e}")
+                self.logger.error(f"🚨 [TD-ERROR] Exception in Trade loop: {e}")
                 ws_error_total.labels(
                     exchange=self.exchange_id,
                     symbol=self.symbol

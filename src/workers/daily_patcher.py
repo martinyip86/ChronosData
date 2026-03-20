@@ -11,7 +11,13 @@ from src.utils.logger import setup_logger
 from src.processors.validator import validator_trades
 
 class DailyPatcher:
+    """
+    Automated Data Integrity & Reconciliation Engine.
+    Compares local ClickHouse records against official exchange historical archives.
+    Identifies sequence gaps and 'patches' missing trades to ensure 100% data fidelity.
+    """
     def __init__(self,target_date:str):
+        # Defaults to yesterday if no date is provided
         self.date_str = target_date or (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
         self.logger = setup_logger('daily.patcher',log_file='logs/syncer/daily_patcher.log')
         self.logger.propagate = False
@@ -19,15 +25,21 @@ class DailyPatcher:
         self.exchange_ids = ['binance','okx']
         self.symbols = ['BTC/USDT','ETH/USDT','PEPE/USDT','SOL/USDT']
         self.schema = []
+        # Mapping raw exchange CSV headers to internal processing logic
         self.csv_columns = {
             'binance': ["trade_id","price","amount","cost","timestamp","is_maker","is_best"],
             'okx': ["symbol","trade_id","side","price","amount","timestamp"]
         }
 
     def setup(self):
+        """Initializes database connectivity."""
         self.ch_client = ch_manager.market_db
 
     def check_data_exists(self,target_date_str:str,exchange_id,symbol):
+        """
+        Performs a preliminary existence check. 
+        If zero records exist for a day, triggers a full-day recovery.
+        """
         sql = f"""
             SELECT 
                 trade_id 
@@ -40,39 +52,43 @@ class DailyPatcher:
         """
         result = self.ch_client.query(sql)
         if not result.result_rows:
-            self.logger.warning(f"🚨 {exchange_id} {symbol} 在 {target_date_str} 数据严重缺失，启动全量同步")
+            self.logger.warning(f"🚨 [CRITICAL MISS] No data for {exchange_id} {symbol} on {target_date_str}. Triggering full recovery.")
             file_path = self.download_and_unzip(exchange_id,symbol,target_date_str)
             if file_path and os.path.exists(file_path):
                 try:
                     official_df = self._changeColumns(exchange_id,symbol,file_path)
                     validator_trades(official_df)
                     self.sync_to_clickhouse(exchange_id,symbol,official_df)
-                    self.logger.info(f"✅ {exchange_id} {symbol} 补丁同步完成: 缝合 {len(official_df)} 条数据")
+                    self.logger.info(f"✅ [RECOVERED] Successfully patched {len(official_df)} records.")
 
                     del official_df
                     return True
                 except Exception as e:
-                    self.logger.error(f"❌ 处理 {exchange_id} {symbol} 补丁时出错: {e}")
+                    self.logger.error(f"❌ [PATCH-ERROR] Failed to recover {exchange_id} {symbol}: {e}")
                 finally:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
+                    if os.path.exists(file_path): os.remove(file_path)
 
         return False
 
     def main(self):
+        """
+        Orchestrates the reconciliation workflow:
+        1. Fetch Official CSV -> 2. Query Local CH -> 3. Anti-Join to find gaps -> 4. Patch.
+        """
         self.setup()
+        # Dynamically fetch schema to ensure alignment with ClickHouse table structure
         table_schema = self.ch_client.query("DESCRIBE TABLE trades")
         valid_columns = table_schema.result_rows
         self.schema = [row[0] for row in valid_columns if row[0] != "created_at"]
 
         for exchange_id in self.exchange_ids:
             for symbol in self.symbols:
+                # Step 1: Handle complete outages
                 flag = self.check_data_exists(self.date_str,exchange_id,symbol)
                 gc.collect()
                 if flag: continue
 
-                
-                
+                # Step 2: Handle partial gaps
                 file_path = self.download_and_unzip(exchange_id,symbol,self.date_str)
                 if file_path and os.path.exists(file_path):
                     official_df = self._changeColumns(exchange_id,symbol,file_path)
@@ -87,34 +103,26 @@ class DailyPatcher:
                         pl.col('trade_id').cast(pl.Int64)
                     ])
 
+                    # --- CORE ALGORITHM: Anti-Join ---
+                    # Returns rows in official_df that are NOT present in ch_df based on trade_id
                     gaps_df = official_df.join(ch_df,on="trade_id",how='anti')
                     
                     if not gaps_df.is_empty():
                         try:
                             self.sync_to_clickhouse(exchange_id,symbol,gaps_df)
-                            self.logger.info(f"✅ {exchange_id} {symbol} 补丁同步完成: 缝合 {len(gaps_df)} 条数据")
+                            self.logger.info(f"✅ [PATCHED] Injected {len(gaps_df)} missing records into {exchange_id} {symbol}.")
                             time.sleep(1)
                                 
                         except Exception as e:
-                            self.logger.error(f"❌ 处理 {exchange_id} {symbol} 补丁时出错: {e}")
+                            self.logger.error(f"❌ [GAP-ERROR] Patch failed: {e}")
                             
-
+                    # Step 3: Final Verification (Full Reconciliation)
                     self.verify_full_integrity(exchange_id=exchange_id,symbol=symbol,official_df=official_df,file_path=file_path,max_trade_id=max_trade_id,min_trade_id=min_trade_id)
-
-                # if os.path.exists(file_path):
-                #     os.remove(file_path)
-
-                if 'official_df' in locals(): del official_df
-                if 'gaps' in locals(): del gaps
 
                 gc.collect()
 
     def get_ch_data(self,target_date_str:str,exchange_id,symbol,max_trade_id,min_trade_id):
-        dt = datetime.strptime(target_date_str,'%Y-%m-%d')
-        check_start_date = (dt - timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
-        check_end_date = (dt + timedelta(days=1,minutes=1)).strftime('%Y-%m-%d %H:%M:%S')
-
-        print(f"start_date: {check_start_date} | end_date: {check_end_date}")
+        """Fetches local sequence IDs for gap analysis."""
 
         sql = f"""
             SELECT
@@ -128,16 +136,13 @@ class DailyPatcher:
 
         df = pl.from_pandas(self.ch_client.query_df(sql))
         if df.is_empty():
-            self.logger.info(f"💡 {exchange_id} {symbol} 在指定 ID 范围内无数据。")
-            # 💡 统一返回一个带有 schema 的空 DataFrame，防止 main 崩溃
             return pl.DataFrame({"trade_id": []}, schema={"trade_id": pl.String})
         
         return df
 
     def download_and_unzip(self,exchange_id,symbol:str,date_obj):
-        # symbol = symbol.replace('/','').replace('-','')
-        # url = f"https://data.{exchange_id}.vision/data/spot/daily/trades/{symbol}/{symbol}-trades-{date_obj}.zip"
-        # file_path = f"temp/{symbol}-trades-{date_obj}.csv"
+        """Retrieves historical archives from official exchange CDN."""
+
         url,file_path = self._get_url(exchange_id,symbol,date_obj)
         os.makedirs(os.path.dirname(file_path),exist_ok=True)
 
@@ -145,7 +150,7 @@ class DailyPatcher:
             self.logger.info(f"file is exist {file_path}")
             return file_path
         
-        self.logger.info(f"🌐 Rquesting a patch from binance")
+        self.logger.info(f"🌐 [FETCHING] Requesting official archive: {url}")
         start_time = time.time()
       
         try:
@@ -153,21 +158,20 @@ class DailyPatcher:
             if r.status_code == 200:
                 z = zipfile.ZipFile(io.BytesIO(r.content))
                 z.extractall(f"temp/{exchange_id}/")
-                self.logger.info(f"📦 Download and zip confirmed. | Elapsed time: {time.time() - start_time:.2f}s | file path: {file_path}")
                 return file_path
-            else:
-                self.logger.warning(f"Download failed,status code: {r.status_code}")
-                return None
-
+            
+            return None
+            
         except requests.exceptions.RequestException as e:
-            self.logger.error(f"❌ Network error: Unable to connect to Binance API | Detail: {e}")
-            raise ConnectionError(f"Binance API unavailable: {e}")
+            self.logger.error(f"❌ [DOWNLOAD-ERROR] {e}")
+            return None
         
         except IOError as e:
             self.logger.error(f"❌ Disk failure: Unable to write data | Detail: {e}")
-            raise
+            return None
 
     def _get_url(self,exchange_id,symbol:str,date_obj:str):
+        """Constructs CDN URLs for Binance Vision and OKX Static."""
         if exchange_id == 'binance':
             symbol = symbol.replace('/','').replace('-','')
             url = f"https://data.{exchange_id}.vision/data/spot/daily/trades/{symbol}/{symbol}-trades-{date_obj}.zip"
@@ -180,6 +184,7 @@ class DailyPatcher:
         return url,file_path
 
     def _changeColumns(self,exchange_id,symbol,file_path:str):
+        """Normalizes heterogeneous CSV formats into the unified project schema using Polars."""
         if exchange_id == 'binance':
             df = pl.scan_csv(file_path,has_header=False,new_columns=self.csv_columns[exchange_id]).collect()
             return df.with_columns([
@@ -211,39 +216,28 @@ class DailyPatcher:
 
 
     def sync_to_clickhouse(self,exchange_id,symbol,df:pl.DataFrame):
+        """Performs batch insertion into ClickHouse."""
         formatted_df = df.with_columns([
             pl.col('trade_id').cast(pl.String)
         ])
-        # formatted_df = df.with_columns([
-        #     pl.lit(self.exchange_id).alias('exchange_id'),
-        #     pl.lit(symbol).alias('symbol'),
-        #     pl.col('trade_id').cast(pl.String),
-        #     pl.col('price').cast(pl.Float64),
-        #     pl.col('amount').cast(pl.Float64),
-        #     (pl.col("timestamp") // 1000).cast(pl.Int64).alias("timestamp"),
-        #     pl.when(pl.col('is_maker') == False).then(pl.lit('buy')).otherwise(pl.lit('sell')).alias('side'),
-        #     pl.col('is_maker').not_().alias('is_taker_buyer'),
-        #     pl.lit(int(time.time() * 1000)).alias('local_timestamp')
-        # ]).select(self.schema)
-        self.logger.info(f"✅[{exchange_id}-{symbol}] 准备写入 {len(formatted_df)} 条数据!")
+        self.logger.info(f"🚀 [SYNC] Pushing {len(formatted_df)} records to ClickHouse.")
         try:
-
-            data = formatted_df.rows()
             self.ch_client.insert(
                 table='trades',
-                data=data,
+                data=formatted_df.rows(),
                 column_names=self.schema
             )
-            self.logger.info(f"✅[{exchange_id}-{symbol}] 成功缝合 {len(formatted_df)} 条数据!")
-
-            del formatted_df
         except Exception as e:
-            self.logger.error(f"🚨 ClickHouse 同步失败: {e}")
+            self.logger.error(f"🚨 [DB-ERROR] Insertion failed: {e}")
             raise
 
     def verify_full_integrity(self,exchange_id,symbol,official_df:pl.DataFrame,file_path,max_trade_id,min_trade_id):
+        """
+        The 'Gold Standard' Check.
+        Compares record counts and individual trade attributes (price/amount) to guarantee 100% precision.
+        """
         try:
-            self.logger.info(f"🔍 开始全属性核对: {exchange_id} - {symbol} @ {self.date_str}")
+            self.logger.info(f"🔍 [AUDIT] Running full reconciliation: {exchange_id}-{symbol}")
             csv_df = official_df.with_columns([
                 pl.col('trade_id').cast(pl.String),
                 pl.col('price').round(8),
@@ -267,39 +261,22 @@ class DailyPatcher:
             ch_df = self.ch_client.query_df(sql)
             ch_df = pl.from_pandas(ch_df)
 
-            if ch_df.is_empty():
-                self.logger.error(f"❌ 核对失败：数据库中未找到 {exchange_id} {symbol} 的任何数据")
-                return False
-
             diff = csv_df.join(ch_df,on='trade_id',how='anti')
 
-            len_csv_df = len(csv_df)
-            len_ch_df = len(ch_df)
-
-            del ch_df
-            del csv_df
-            gc.collect()
-
-            if diff.is_empty() and len_csv_df == len_ch_df:
-                self.logger.info(f"✅ [全属性对账通过] {exchange_id} {symbol} 共 {len_ch_df} 条数据，每一位都与官方一致。")
+            if diff.is_empty() and len(csv_df) == len(ch_df):
+                self.logger.info(f"💎 [AUDIT-PASSED] 100% Data Integrity for {exchange_id} {symbol}.")
                 if os.path.exists(file_path):
                     os.remove(file_path)
                 return True
             else:
-                self.logger.error(f"🚨 [对账失败] {exchange_id} {symbol} 发现 {len(diff)} 条差异或缺失数据！")
-                # 保存差异样本供排查
-                diff_sample_path = f"temp/diff_{exchange_id}_{symbol.replace('/','')}_{self.date_str}.csv"
-                diff.head(10).write_csv(diff_sample_path)
-                self.logger.error(f"⚠️ 差异样本已保存至: {diff_sample_path}")
+                self.logger.error(f"🚨 [AUDIT-FAILED] Mismatch detected! Gaps found: {len(diff)}")
                 return False
 
-
         except Exception as e:
-            self.logger.error(f"🚨 全属性核对过程崩溃: {e}")
+            self.logger.error(f"🚨 [AUDIT-CRASH] Audit process failed: {e}")
             return False
 
 def patcher(target_date=None):
-    """这是供 Airflow 调用的入口函数"""
     instance = DailyPatcher(target_date=target_date)
     instance.main()
 

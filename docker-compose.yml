@@ -33,7 +33,6 @@ services:
     depends_on:
       - quant_redis
       - clickhouse
-    condition: service_healthy
 
   collector-okx:
     build: .                # 告诉它去当前目录找 Dockerfile 构建镜像
@@ -53,8 +52,15 @@ services:
     
     environment:
       - PYTHONPATH=/app
+      - EXCHANGE=okx
+      - RUN_MODE=${OKX_RUN_MODE:-direct}
 
-    command: python /app/src/workers/sync_db.py
+    command: >
+      sh -c "if [ \"$$RUN_MODE\" = \"sync\" ]; then
+              python /app/src/workers/sync_db.py
+            else
+              python /app/src/collectors/stream_manager.py --exchange=okx
+            fi"
 
     # 资源限制（防止 Polars 瞬间吃光服务器内存）
     deploy:
@@ -67,7 +73,6 @@ services:
     depends_on:
       - quant_redis
       - clickhouse
-    condition: service_healthy
 
   syncer:
     build: .
@@ -97,7 +102,6 @@ services:
     depends_on:
       - quant_redis
       - clickhouse
-    condition: service_healthy
 
   gap_filler:
     build: .
@@ -126,7 +130,6 @@ services:
     depends_on:
       - quant_redis
       - clickhouse
-    condition: service_healthy
 
   #控制组件
   prometheus:

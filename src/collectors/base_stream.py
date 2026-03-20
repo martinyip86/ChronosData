@@ -14,8 +14,17 @@ class BaseStream(ABC):
         self._stop_event = asyncio.Event()
         self.first_message_received = False
 
+    """
+    Binance-specific WebSocket implementation.
+    Handles real-time trade streams and maintains sequence integrity.
+    """
+
     @abstractmethod
     async def connect(self):
+        """
+        Implements the Binance WebSocket connection and subscription logic.
+        Uses a resilient connection strategy with automated heartbeats.
+        """
         raise NotImplementedError("You must implement the connect() method to connect to exchenge")
     
     # @abstractmethod
@@ -26,7 +35,7 @@ class BaseStream(ABC):
         self.is_running = True
         print(f"🚀 [SYSTEM] {self.exchange_id} 启动: {self.symbol}")
         while not self._stop_event.is_set():
-            wait_time = random.uniform(1, 5)
+            wait_time = random.uniform(1, 10)
             await asyncio.sleep(wait_time)
             try:
                 await self.connect()

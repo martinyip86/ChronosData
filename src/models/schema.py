@@ -5,51 +5,68 @@ import json
 from datetime import datetime
 
 class TickData(BaseModel):
-    symbol:str = Field(...,description="BTC/USDT")
-    mkt_type:str = Field(...,description="spot")
-    bid_volume:float = Field(...,description="bid volume")
-    bid_price:float = Field(...,description="bid price")
-    ask_volume:float = Field(...,description="ask volume")
-    ask_price:float = Field(...,description="ask price")
-    bid_prices:List[float] = Field(...,description="bid prices")
-    ask_prices:List[float] = Field(...,description="ask prices")
-    bid_volumes:List[float] = Field(...,description="bid volumes")
-    ask_volumes:List[float] = Field(...,description="ask volumes")
-    nonce:int = Field(...,description="orderbook updated Serial Number")
-    timestamp:int = Field(...,description="交易所原始毫秒时间戳")
+    """
+    Level 2 Market Depth Snapshot.
+    Captures top 20 bids/asks to provide a high-fidelity view of the orderbook.
+    """
+    symbol:str = Field(...,description="Instrument symbol (e.g., BTC/USDT)")
+    mkt_type:str = Field(...,description="Market segment (spot/swap/future)")
+    bid_volume:float = Field(...,description="Best bid quantity")
+    bid_price:float = Field(...,description="Best bid price")
+    ask_volume:float = Field(...,description="Best ask quantity")
+    ask_price:float = Field(...,description="Best ask price")
+
+    # Depth arrays for micro-structure analysis (e.g., Order Flow Imbalance)
+    bid_prices:List[float] = Field(...,description="Array of top 20 bid prices")
+    ask_prices:List[float] = Field(...,description="Array of top 20 ask prices")
+    bid_volumes:List[float] = Field(...,description="Array of top 20 bid volumes")
+    ask_volumes:List[float] = Field(...,description="aArray of top 20 ask volumes")
+    nonce:int = Field(...,description="Exchange sequence number/Update ID")
+    timestamp:int = Field(...,description="Original exchange matching engine timestamp (ms)")
     local_timestamp:int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
-    exchange_id:str = Field("Binance",description="数据来源，用于SOR对比")
+    exchange_id:str = Field("Binance",description="Data source identifier for Smart Order Routing (SOR)")
 
 class TradeData(BaseModel):
-    symbol:str = Field(...,description="BTC/USDT")
-    exchange_id:str = Field(...,description="Binance, OKX, etc.")
-    mkt_type:str = Field(...,description="spot")
-    trade_id:str = Field(...,description="成交 Id")
-    timestamp:int = Field(...,description="交易所原始毫秒时间戳")
-    side:str = Field(...,description="buy/sell")
-    price:float = Field(...,description="价格")
-    amount:float = Field(...,description="交易量")
-    cost:float = Field(...,description="成交总额 price * amount")
-    is_taker_buyer:bool = Field(...,description="True=主动买(看多), False=主动卖(看空)")
-    raw_info:str = Field(...,description="ccxt底层数据,json模式")
+    """
+    Individual Trade Execution Record.
+    Standardized schema to unify trade events across multiple exchanges.
+    """
+    symbol:str = Field(...,description="Instrument symbol")
+    exchange_id:str = Field(...,description="Bxchange identifier (e.g., Binance, OKX)")
+    mkt_type:str = Field(...,description="Market segment (spot/swap/future)")
+    trade_id:str = Field(...,description="Unique execution ID from exchange")
+    timestamp:int = Field(...,description="Matching engine execution timestamp (ms)")
+    side:str = Field(...,description="Execution direction (buy/sell)")
+    price:float = Field(...,description="Execution price")
+    amount:float = Field(...,description="Execution quantity")
+    cost:float = Field(...,description="Total notion value (price * amount)")
+    is_taker_buyer:bool = Field(...,description="Directional intent: True=Taker Buy (Bullish), False=Taker Sell (Bearish)")
+    raw_info:str = Field(...,description="Original raw JSON from CCXT/Exchange for audit trails")
     local_timestamp:int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
 
     @classmethod
     def from_ccxt(cls,trade:dict,exchange:str,mkt_type:str):
+        """
+        Factory method to normalize disparate exchange trade formats into a unified schema.
+        Handles complex 'Taker/Maker' logic specific to each venue.
+        """
         info = trade.get('info', {})
         
+        # --- Normalized Directional Logic ---
+        # Determining 'is_taker_buyer' is critical for Order Flow analysis.
         if exchange.lower() == 'binance':
-            # Binance: m=True (Maker是买方) -> Taker是卖方 -> is_taker_buyer = False
+            # Binance Logic: 
+            # 'm' (isBuyerMaker) means the buyer was the Maker (Passive).
+            # Therefore, if m=True, the Taker was the Seller -> is_taker_buyer = False.
             is_m = info.get('m', str(info.get('isBuyerMaker', '')).lower() == 'true')
             is_taker_buyer = not is_m
 
-            if is_m is not None:
-                is_taker_buyer = not (str(is_m).lower() == 'true')
-            else:
-                # 兼容 backfill 时手动传入的字段，如果都没有，默认 False
-                is_taker_buyer = trade.get('is_taker_buyer', False)
+            # Robust boolean conversion
+            is_m_bool = str(is_m).lower() == 'true'
+            is_taker_buyer = not is_m_bool
         elif exchange.lower() == 'okx':
-            # OKX: side="buy" (Taker是买方) -> is_taker_buyer = True
+            # OKX Logic: 
+            # Directly provides 'side'. If side is 'buy', the Taker initiated a buy.
             is_taker_buyer = trade.get('side') == 'buy'
 
         return cls(
