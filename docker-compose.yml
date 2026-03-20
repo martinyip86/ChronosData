@@ -31,8 +31,10 @@ services:
           memory: 2G
 
     depends_on:
-      - quant_redis
-      - clickhouse
+      quant_redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
 
   collector-okx:
     build: .                # 告诉它去当前目录找 Dockerfile 构建镜像
@@ -59,7 +61,7 @@ services:
       sh -c "if [ \"$$RUN_MODE\" = \"sync\" ]; then
               python /app/src/workers/sync_db.py
             else
-              python /app/src/collectors/stream_manager.py --exchange=okx
+              python /app/src/collectors/stream_manager.py --exchange okx
             fi"
 
     # 资源限制（防止 Polars 瞬间吃光服务器内存）
@@ -71,8 +73,10 @@ services:
           memory: 2G
 
     depends_on:
-      - quant_redis
-      - clickhouse
+      quant_redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
 
   syncer:
     build: .
@@ -100,8 +104,10 @@ services:
           memory: 4G
 
     depends_on:
-      - quant_redis
-      - clickhouse
+      quant_redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
 
   gap_filler:
     build: .
@@ -128,8 +134,10 @@ services:
           memory: 4G
 
     depends_on:
-      - quant_redis
-      - clickhouse
+      quant_redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
 
   #控制组件
   prometheus:
@@ -163,6 +171,11 @@ services:
     ports:
       - "6380:6379"
     command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     deploy:
       resources:
         limits:
@@ -189,7 +202,7 @@ services:
       test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 20
       start_period: 30s
 
   
