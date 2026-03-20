@@ -2,9 +2,8 @@ import asyncio
 import ccxt.pro as ccxt_pro
 import time
 import json
-import gc
+import hashlib
 from src.collectors.base_stream import BaseStream
-from src.storage.ch_client import ch_manager
 from src.models.schema import TickData,TradeData
 from prometheus_client import push_to_gateway,REGISTRY,generate_latest
 from src.monitoring.metrics import ws_reconnect_total,ws_error_total,silence_gauge,parquet_write_duration,queue_size_gauge
@@ -15,8 +14,8 @@ class BinanceStream(BaseStream):
     Implements real-time Orderbook and Trade stream ingestion with 
     built-in gap detection and Prometheus monitoring.
     """
-    def __init__(self,exchange,symbol,redis_client,dtype):
-        super().__init__(exchange,symbol,redis_client,dtype)
+    def __init__(self,exchange,symbol,ch_client,redis_client,dtype):
+        super().__init__(exchange,symbol,ch_client,redis_client,dtype)
         self.client = None
         self.mkt_type = 'spot'
         # Keys for state management and deduplication
@@ -141,7 +140,26 @@ class BinanceStream(BaseStream):
                     symbol=self.symbol
                 ).inc()
                 raise e
-            
+
+    async def _get_last_trade_id(self):
+        try:
+            sql = f"""
+                SELECT MAX(toInt64(trade_id)) AS trade_id
+                FROM trades
+                WHERE exchange_id='{self.exchange_id}'
+                    AND symbol='{self.symbol}'
+                GROUP BY exchange_id,symbol
+                LIMIT 1
+            """
+            result = await asyncio.to_thread(self.ch_client.query, sql)
+
+            if result.result_rows and result.result_rows[0][0] is not None:
+                return int(result.result_rows[0][0])
+            else:
+                return None
+        except Exception as e:
+            self.logger.error(f"❌ [CH-RECOVER-ERROR] {e}")
+            return None
 
     async def _watch_trade(self):
         """
@@ -158,7 +176,10 @@ class BinanceStream(BaseStream):
             self.logger.info(f"📥 [INIT] {self.exchange_id}-{self.symbol} recovered start point: {self.last_id_mem}")
         else:
             self.logger.warning(f"⚠️ [INIT] No state found in Redis. Starting from live head.")
-            self.last_id_mem = None
+            self.last_id_mem = await self._get_last_trade_id()
+            if self.last_id_mem is not None:
+                self.redis.hset(redis_hex_trade_id_key,self.symbol,self.last_id_mem)
+
         last_active_time = time.time()
 
         while not self._stop_event.is_set():
@@ -190,15 +211,27 @@ class BinanceStream(BaseStream):
                     # --- CORE LOGIC: Gap Detection ---
                     # If current ID jumps over the expected sequence, trigger a Gap-Fill job.
                     if self.last_id_mem is not None:
-                        if curr_id > self.last_id_mem + 1:
-                            gap_job = {
-                                'symbol':self.symbol,
-                                'exchange_id':self.exchange_id,
-                                'start_id':self.last_id_mem + 1,
-                                'end_id':curr_id - 1
-                            }
-                            await self.redis.rpush("queue:gap_fill_jobs",json.dumps(gap_job))
-                            self.logger.warning(f"🕳️ [GAP] Sequence jump detected: {self.last_id_mem} -> {curr_id}")
+                        start_id = self.last_id_mem + 1
+                        end_id = curr_id - 1
+
+                        job_id = hashlib.md5(f"{self.exchange_id}:{self.symbol}:{start_id}:{end_id}".encode()).hexdigest()
+                        lock_key = "lock:gap_jobs_active"
+
+                        is_new = await self.redis.sadd(lock_key, job_id)
+
+                        if is_new:
+                            if curr_id > start_id:
+                                gap_job = {
+                                    'symbol':self.symbol,
+                                    'exchange_id':self.exchange_id,
+                                    'start_id':start_id,
+                                    'end_id':end_id,
+                                    'job_id':job_id
+                                }
+                                await self.redis.rpush("queue:gap_fill_jobs",json.dumps(gap_job))
+                                self.logger.warning(f"🕳️ [GAP] Sequence jump detected: {self.last_id_mem} -> {curr_id}")
+                        else:
+                            self.logger.info(f"⏳ [GAP-SKIP] Gap {start_id}-{end_id} already being processed.")
 
                     # Update local sequence tracking
                     if self.last_id_mem is None or curr_id > self.last_id_mem:

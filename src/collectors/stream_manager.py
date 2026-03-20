@@ -4,6 +4,7 @@ import importlib
 from src.collectors.providers.binance import BinanceStream
 from src.utils.logger import setup_logger
 from src.storage.redis_client import redis_manager
+from src.storage.ch_client import ch_manager
 from src.storage.state_watcher import StateWatcher
 from prometheus_client import push_to_gateway,REGISTRY
 
@@ -32,11 +33,12 @@ class StreamCommander:
         Starts the parallel ingestion matrix and monitoring tasks.
         """
         redis_client = redis_manager.market_db
+        clickhouse_client = ch_manager.market_db
         self.logger.info("🇨🇭 [SYSTEM] Initializing parallel ingestion matrix...")
 
         # State Recovery & Sequence Synchronization
-        watcher_tak = asyncio.create_task(StateWatcher.run(interval=15))
-        self.running_tasks.append(watcher_tak)
+        # watcher_tak = asyncio.create_task(StateWatcher.run(interval=15))
+        # self.running_tasks.append(watcher_tak)
 
         await asyncio.sleep(2)
         try:
@@ -47,7 +49,7 @@ class StreamCommander:
                         self.logger.info(f"🚀 [SCHEDULE] Deploying task: {exchange_name} | {symbol} | {type_name}")
 
                         # Initialize collector instance
-                        collector = BinanceStream(exchange=exchange_name,symbol=symbol, redis_client=redis_client,dtype=type_name)
+                        collector = BinanceStream(exchange=exchange_name,symbol=symbol, redis_client=redis_client,ch_client=clickhouse_client,dtype=type_name)
 
                         # Wrap in safe_run to prevent a single task failure from crashing the entire matrix
                         task = asyncio.create_task(self.safe_run(collector, exchange_name, symbol, type_name))

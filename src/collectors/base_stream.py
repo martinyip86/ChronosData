@@ -4,10 +4,11 @@ import random
 from src.utils.logger import setup_logger
 
 class BaseStream(ABC):
-    def __init__(self,exchange_id,symbol,redis_client,dtype):
+    def __init__(self,exchange_id,symbol,ch_client,redis_client,dtype):
         self.exchange_id = exchange_id
         self.symbol = symbol
         self.redis = redis_client
+        self.ch_client = ch_client
         self.dtype = dtype
         self.logger = setup_logger(f"collector.ws.{exchange_id}",log_file=f"logs/collector/collector_{exchange_id}.log")
         self.is_running = False

@@ -73,13 +73,24 @@ class GapFiller:
     async def process_job(self,job):
         await asyncio.sleep(2)
         """Dispatches job to specific exchange backfiller."""
+        job_id = job['job_id']
         symbol:str = job['symbol']
         exchange_id = job['exchange_id']
         start_id = int(job['start_id'])
         end_id = int(job['end_id'])
 
         self.logger.info(f"🔍 [GAP-DETECTED] Recovering {exchange_id}-{symbol}: ID {start_id} -> {end_id}")
-        await self.binance_filler(exchange_id,symbol,start_id,end_id)
+        try:
+            await self.binance_filler(exchange_id,symbol,start_id,end_id)
+        except Exception as e:
+            self.logger.error(f"❌ [JOB-FAILED] Error during backfill: {e}")
+        finally:
+            # --- 关键解锁逻辑 ---
+            if job_id:
+                lock_key = "lock:gap_jobs_active"
+                await self.redis.srem(lock_key, job_id)
+                self.logger.info(f"🔓 [LOCK-RELEASED] Job fingerprint {job_id} cleared.")
+
         
 
     async def binance_filler(self,exchange_id,symbol:str,start_id:int,end_id:int):
@@ -128,7 +139,6 @@ class GapFiller:
                         # isBuyerMaker: True means Sell side for Taker
                         ccxt_format = {
                             'symbol': symbol,
-                            'mkt_type': 'spot',
                             'id': str(trade['id']),
                             'timestamp': int(trade['time']),
                             'side': 'sell' if trade['isBuyerMaker'] else 'buy',
@@ -141,7 +151,6 @@ class GapFiller:
                     elif exchange_id == 'okx':
                         ccxt_format = {
                             'symbol': symbol,
-                            'mkt_type': 'spot',
                             'id': str(trade['id']),
                             'timestamp': int(trade['timestamp']),
                             'side': trade['side'],
@@ -153,7 +162,7 @@ class GapFiller:
                         }
 
                     # Re-inject missing data into the main processing pipeline
-                    trade_obj = TradeData.from_ccxt(ccxt_format, exchange_id)
+                    trade_obj = TradeData.from_ccxt(ccxt_format, exchange_id,'spot')
                     await self.redis.rpush('market:trades:all',trade_obj.model_dump_json())
 
                     current_from_id = trade_id + 1

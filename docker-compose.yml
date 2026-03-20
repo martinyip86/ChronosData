@@ -139,6 +139,36 @@ services:
       clickhouse:
         condition: service_healthy
 
+  gap_detector:
+    build: .
+    container_name: gap-detector-worker
+    restart: always
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./logs:/app/logs
+      - ./src:/app/src
+
+    environment:
+      - PYTHONPATH=/app
+
+    command: python /app/src/workers/gap_detector.py
+
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+        reservations:
+          memory: 4G
+
+    depends_on:
+      quant_redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
   #控制组件
   prometheus:
     image: prom/prometheus:latest
@@ -204,5 +234,10 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 4G
+    restart: always
 
   
