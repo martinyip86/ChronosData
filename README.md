@@ -54,7 +54,7 @@ Grafana: http://localhost:3000 (default password: administration)
 
 Prometheus: http://localhost:9090
 
-📂 Project Structure
+## 📂 Project Structure
 .
 ├── src/
 │   ├── collectors/      # Exchange WebSocket Integration Logic (StreamCommander)
@@ -66,6 +66,6 @@ Prometheus: http://localhost:9090
 ├── docker-compose.yml   # Industrial-Grade Container Orchestration
 └── .env.example         # Environment Variable Template
 
-🎯 Vision
+## 🎯 Vision
 
 This project is dedicated to building the most robust underlying data infrastructure to support cutting-edge strategy research,striving toward the pinnacle of the quantitative data domain.
