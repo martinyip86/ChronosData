@@ -36,6 +36,7 @@ class Consolidator:
                     timestamp""",
             'trades':"""
                 trade_id,
+                trade_id_raw,
                 symbol,
                 mkt_type,
                 exchange_id,

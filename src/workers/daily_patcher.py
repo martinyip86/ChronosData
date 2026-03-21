@@ -24,7 +24,6 @@ class DailyPatcher:
         self.ch_client = None
         self.exchange_ids = ['binance','okx']
         self.symbols = ['BTC/USDT','ETH/USDT','PEPE/USDT','SOL/USDT']
-        self.schema = []
         # Mapping raw exchange CSV headers to internal processing logic
         self.csv_columns = {
             'binance': ["trade_id","price","amount","cost","timestamp","is_maker","is_best"],
@@ -58,7 +57,7 @@ class DailyPatcher:
                 try:
                     official_df = self._changeColumns(exchange_id,symbol,file_path)
                     validator_trades(official_df)
-                    self.sync_to_clickhouse(exchange_id,symbol,official_df)
+                    self.sync_to_clickhouse(official_df)
                     self.logger.info(f"✅ [RECOVERED] Successfully patched {len(official_df)} records.")
 
                     del official_df
@@ -76,10 +75,6 @@ class DailyPatcher:
         1. Fetch Official CSV -> 2. Query Local CH -> 3. Anti-Join to find gaps -> 4. Patch.
         """
         self.setup()
-        # Dynamically fetch schema to ensure alignment with ClickHouse table structure
-        table_schema = self.ch_client.query("DESCRIBE TABLE trades")
-        valid_columns = table_schema.result_rows
-        self.schema = [row[0] for row in valid_columns if row[0] != "created_at"]
 
         for exchange_id in self.exchange_ids:
             for symbol in self.symbols:
@@ -99,17 +94,13 @@ class DailyPatcher:
 
                     ch_df = self.get_ch_data(self.date_str,exchange_id,symbol,max_trade_id,min_trade_id)
 
-                    ch_df = ch_df.with_columns([
-                        pl.col('trade_id').cast(pl.Int64)
-                    ])
-
                     # --- CORE ALGORITHM: Anti-Join ---
                     # Returns rows in official_df that are NOT present in ch_df based on trade_id
                     gaps_df = official_df.join(ch_df,on="trade_id",how='anti')
                     
                     if not gaps_df.is_empty():
                         try:
-                            self.sync_to_clickhouse(exchange_id,symbol,gaps_df)
+                            self.sync_to_clickhouse(gaps_df)
                             self.logger.info(f"✅ [PATCHED] Injected {len(gaps_df)} missing records into {exchange_id} {symbol}.")
                             time.sleep(1)
                                 
@@ -129,9 +120,9 @@ class DailyPatcher:
                 trade_id
             FROM 
                 trades
-            WHERE toInt64(trade_id) BETWEEN {min_trade_id} AND {max_trade_id}
+            WHERE trade_id BETWEEN {min_trade_id} AND {max_trade_id}
             AND exchange_id='{exchange_id}' AND symbol='{symbol}'
-            ORDER BY toInt64(trade_id) ASC
+            ORDER BY trade_id ASC
         """
 
         df = pl.from_pandas(self.ch_client.query_df(sql))
@@ -185,6 +176,7 @@ class DailyPatcher:
 
     def _changeColumns(self,exchange_id,symbol,file_path:str):
         """Normalizes heterogeneous CSV formats into the unified project schema using Polars."""
+        schema = ['trade_id','trade_id_raw','exchange_id','symbol','mkt_type','price','amount','timestamp','side','is_taker_buyer','local_timestamp']
         if exchange_id == 'binance':
             df = pl.scan_csv(file_path,has_header=False,new_columns=self.csv_columns[exchange_id]).collect()
             return df.with_columns([
@@ -192,13 +184,14 @@ class DailyPatcher:
                 pl.lit(symbol).alias('symbol'),
                 pl.lit('spot').alias('mkt_type'),
                 pl.col('trade_id').cast(pl.Int64),
+                pl.col('trade_id').cast(pl.String).alias('trade_id_raw'),
                 pl.col('price').cast(pl.Float64),
                 pl.col('amount').cast(pl.Float64),
                 (pl.col("timestamp") // 1000).cast(pl.Int64).alias("timestamp"),
                 pl.when(pl.col('is_maker') == False).then(pl.lit('buy')).otherwise(pl.lit('sell')).alias('side'),
                 pl.col('is_maker').not_().alias('is_taker_buyer'),
                 pl.lit(int(time.time() * 1000)).alias('local_timestamp')
-            ]).select(self.schema)
+            ]).select(schema)
         elif exchange_id == 'okx':
             df = pl.scan_csv(file_path).collect()
             return df.with_columns([
@@ -206,26 +199,24 @@ class DailyPatcher:
                 pl.lit(symbol).alias('symbol'),
                 pl.lit('spot').alias('mkt_type'),
                 pl.col('trade_id').cast(pl.Int64),
+                pl.col('trade_id').cast(pl.String).alias('trade_id_raw'),
                 pl.col('price').cast(pl.Float64),
                 pl.col('size').cast(pl.Float64).alias('amount'),
                 pl.col("created_time").cast(pl.Int64).alias('timestamp'),
                 pl.col('side'),
                 (pl.col('side') == 'buy').alias('is_taker_buyer'),
                 pl.lit(int(time.time() * 1000)).alias('local_timestamp')
-            ]).select(self.schema)
+            ]).select(schema)
 
 
-    def sync_to_clickhouse(self,exchange_id,symbol,df:pl.DataFrame):
+    def sync_to_clickhouse(self,df:pl.DataFrame):
         """Performs batch insertion into ClickHouse."""
-        formatted_df = df.with_columns([
-            pl.col('trade_id').cast(pl.String)
-        ])
-        self.logger.info(f"🚀 [SYNC] Pushing {len(formatted_df)} records to ClickHouse.")
+        arrow_table = df.to_arrow()
+        self.logger.info(f"🚀 [SYNC] Pushing {len(df)} records to ClickHouse.")
         try:
-            self.ch_client.insert(
+            self.ch_client.insert_arrow(
                 table='trades',
-                data=formatted_df.rows(),
-                column_names=self.schema
+                arrow_table=arrow_table
             )
         except Exception as e:
             self.logger.error(f"🚨 [DB-ERROR] Insertion failed: {e}")
@@ -239,7 +230,6 @@ class DailyPatcher:
         try:
             self.logger.info(f"🔍 [AUDIT] Running full reconciliation: {exchange_id}-{symbol}")
             csv_df = official_df.with_columns([
-                pl.col('trade_id').cast(pl.String),
                 pl.col('price').round(8),
                 pl.col('amount').round(8)
             ])
@@ -255,8 +245,8 @@ class DailyPatcher:
                 FROM
                     trades FINAL
                 WHERE exchange_id='{exchange_id}' AND symbol='{symbol}'
-                    AND toInt64(trade_id) BETWEEN {min_trade_id} AND {max_trade_id}
-                ORDER BY toInt64(trade_id) ASC
+                    AND trade_id BETWEEN {min_trade_id} AND {max_trade_id}
+                ORDER BY trade_id ASC
             """
             ch_df = self.ch_client.query_df(sql)
             ch_df = pl.from_pandas(ch_df)

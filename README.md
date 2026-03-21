@@ -32,6 +32,7 @@ The project adopts a **Producer-Consumer** architecture, achieving full-link dec
 ```bash
 git clone [https://github.com/martinyip86/ChronosData.git]
 cd ChronosData
+```
 
 ### 2. Environment Setup
 Create a `.env` file and fill in your API information (refer to `.env.example`):
