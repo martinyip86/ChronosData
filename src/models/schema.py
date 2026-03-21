@@ -40,9 +40,7 @@ class TradeData(BaseModel):
     side:str = Field(...,description="Execution direction (buy/sell)")
     price:float = Field(...,description="Execution price")
     amount:float = Field(...,description="Execution quantity")
-    cost:float = Field(...,description="Total notion value (price * amount)")
     is_taker_buyer:bool = Field(...,description="Directional intent: True=Taker Buy (Bullish), False=Taker Sell (Bearish)")
-    raw_info:str = Field(...,description="Original raw JSON from CCXT/Exchange for audit trails")
     local_timestamp:int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
 
     @classmethod
@@ -80,7 +78,5 @@ class TradeData(BaseModel):
             side = trade['side'],
             price = float(trade['price']),
             amount = float(trade['amount']),
-            cost = float(trade.get('cost',0.0)),
-            is_taker_buyer=is_taker_buyer,
-            raw_info = json.dumps(trade['info'])
+            is_taker_buyer=is_taker_buyer
         )
