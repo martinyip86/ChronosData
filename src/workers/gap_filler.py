@@ -139,6 +139,8 @@ class GapFiller:
                         # isBuyerMaker: True means Sell side for Taker
                         ccxt_format = {
                             'symbol': symbol,
+                            'exchange_id': exchange_id,
+                            'mkt_type': 'spot',
                             'id': str(trade['id']),
                             'timestamp': int(trade['time']),
                             'side': 'sell' if trade['isBuyerMaker'] else 'buy',
@@ -151,6 +153,8 @@ class GapFiller:
                     elif exchange_id == 'okx':
                         ccxt_format = {
                             'symbol': symbol,
+                            'exchange_id': exchange_id,
+                            'mkt_type': 'spot',
                             'id': str(trade['id']),
                             'timestamp': int(trade['timestamp']),
                             'side': trade['side'],
@@ -162,7 +166,7 @@ class GapFiller:
                         }
 
                     # Re-inject missing data into the main processing pipeline
-                    trade_obj = TradeData.from_ccxt(ccxt_format, exchange_id,'spot')
+                    trade_obj = TradeData.from_ccxt(ccxt_format, exchange_id)
                     await self.redis.rpush('market:trades:all',trade_obj.model_dump_json())
 
                     current_from_id = trade_id + 1

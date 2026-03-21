@@ -204,7 +204,9 @@ class BinanceStream(BaseStream):
                 max_curr_id = self.last_id_mem
 
                 for trade_dict in trades_list:
-                    trade = TradeData.from_ccxt(trade_dict,self.exchange_id,self.mkt_type)
+                    trade_dict['exchange_id'] = self.exchange_id
+                    trade_dict['mkt_type'] = self.mkt_type
+                    trade = TradeData.from_ccxt(trade_dict,self.exchange_id)
 
                     curr_id = int(trade.trade_id)
 

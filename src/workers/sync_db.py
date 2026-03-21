@@ -41,7 +41,7 @@ class SyncDB:
         if table == 'orderbook':
             max_target, cols = 'nonce', "nonce,symbol,exchange_id,mkt_type,bid_volume,bid_price,ask_volume,ask_price,bid_prices,bid_volumes,ask_prices,ask_volumes,timestamp,local_timestamp"
         elif table == 'trades':
-            max_target, cols = 'trade_id', "trade_id,symbol,exchange_id,mkt_type,price,amount,side,is_taker_buyer,timestamp,local_timestamp"
+            max_target, cols = 'trade_id', "trade_id,trade_id_raw,symbol,exchange_id,mkt_type,price,amount,side,is_taker_buyer,timestamp,local_timestamp"
 
         # 每次进入表同步前确保连接正常
         if not self._connect_ch_db():
@@ -73,20 +73,20 @@ class SyncDB:
                             AND exchange_id='{exchange_id}' AND symbol='{symbol}' AND mkt_type='{mkt_type}'
                             ORDER BY toInt64({max_target}) ASC LIMIT {chunk_size}
                         """
-                        remote_result = self.remote_client.query(remote_sql)
+                        remote_result = self.remote_client.query_arrow(remote_sql)
 
-                        if not remote_result.result_rows:
+                        if remote_result.num_rows == 0:
                             self.logger.info(f"🏁 {exchange_id} {symbol} {table} 已达到实时位置。")
                             break
                         
-                        self.local_client.insert(table, remote_result.result_rows, column_names=remote_result.column_names)
-                        new_local_id = int(remote_result.result_rows[-1][0])
+                        self.local_client.insert_arrow(table,remote_result)
+                        new_local_id = int(remote_result.column(0)[-1].as_py())
                         
                         if new_local_id <= local_id:
                             break
                                 
                         local_id = new_local_id
-                        self.logger.info(f"🚀 {symbol} 搬运中... 进度: {local_id} | 规模: {len(remote_result.result_rows)}")
+                        self.logger.info(f"🚀 {symbol} 搬运中... 进度: {local_id} | 规模: {remote_result.num_rows}")
                         
                     except (DatabaseError, Exception) as e:
                         self.logger.warning(f"⚠️ 遇到网络抖动: {e}，休息30秒后重连...")

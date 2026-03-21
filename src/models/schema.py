@@ -34,7 +34,8 @@ class TradeData(BaseModel):
     symbol:str = Field(...,description="Instrument symbol")
     exchange_id:str = Field(...,description="Bxchange identifier (e.g., Binance, OKX)")
     mkt_type:str = Field(...,description="Market segment (spot/swap/future)")
-    trade_id:str = Field(...,description="Unique execution ID from exchange")
+    trade_id:int = Field(...,description="Unique execution ID from exchange by String Int")
+    trade_id_raw:str = Field(...,description="Unique execution ID from exchange by String")
     timestamp:int = Field(...,description="Matching engine execution timestamp (ms)")
     side:str = Field(...,description="Execution direction (buy/sell)")
     price:float = Field(...,description="Execution price")
@@ -45,7 +46,7 @@ class TradeData(BaseModel):
     local_timestamp:int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
 
     @classmethod
-    def from_ccxt(cls,trade:dict,exchange:str,mkt_type:str):
+    def from_ccxt(cls,trade:dict,exchange:str):
         """
         Factory method to normalize disparate exchange trade formats into a unified schema.
         Handles complex 'Taker/Maker' logic specific to each venue.
@@ -71,9 +72,10 @@ class TradeData(BaseModel):
 
         return cls(
             symbol = trade['symbol'],
-            exchange_id = exchange,
-            mkt_type = mkt_type,
-            trade_id = str(trade['id']),
+            exchange_id = trade['exchange_id'],
+            mkt_type = trade['mkt_type'],
+            trade_id = int(trade['id']),
+            trade_id_raw = str(trade['id']),
             timestamp = int(trade.get('timestamp')) or int(time.time() * 1000),
             side = trade['side'],
             price = float(trade['price']),

@@ -30,15 +30,14 @@ class GapDetector:
                             AND timestamp < toUnixTimestamp64Milli(toDateTime64('{target_date_str} 00:00:00',3) + INTERVAL 1 DAYS)
                             AND exchange_id='{exchange_id}'
                             AND symbol='{symbol}'
-                            ORDER BY toInt64(trade_id) ASC
+                            ORDER BY trade_id ASC
                         """
 
                         result_arrow = await asyncio.to_thread(self.ch_client.query_arrow,sql)
                         df = pl.from_arrow(result_arrow)
                         if not df.is_empty():
                             df = (
-                                df.with_columns([pl.col('trade_id').cast(pl.Int64)])
-                                .with_columns([
+                                df.with_columns([
                                     pl.col("trade_id").shift(1).alias("prev_id")
                                 ])
                                 .filter((pl.col("trade_id") - pl.col("prev_id") > 1))

@@ -36,14 +36,6 @@ class DBsyncer():
             }
         }
 
-        self.schemas = {}
-
-        # Pre-fetch table schemas to ensure column alignment during insertion
-        for config in self.config.values():
-            table_schema = self.ch.query(f"DESCRIBE TABLE {config['table']}")
-            valid_columns = table_schema.result_rows
-            self.schemas[config['table']] = [row[0] for row in valid_columns if row[0] != "created_at"]
-
 
     async def storage_worker(self,dtype):
         """
@@ -100,26 +92,15 @@ class DBsyncer():
             return
 
         start = time.time()
-        final_cols = self.schemas[table_name]
 
-        # Prepare rows for insertion using list comprehension for maximum performance
-        rows = [None] * len(data)
-        for i, row_dict in enumerate(data):
-            rows[i] = [row_dict.get(col) for col in final_cols]
+        df = pl.DataFrame(data)
 
         try:
             # Optimized ClickHouse insertion settings
-            self.ch.insert(
-                table=table_name,
-                data=rows,
-                column_names=final_cols,
-                settings={
-                    'insert_distributed_sync':0, # Async insert for better throughput
-                    'max_insert_block_size':100000
-                }
-            )
+            arrow_table = df.to_arrow()
+            self.ch.insert_arrow(table=table_name,arrow_table=arrow_table)
             duration = time.time()-start
-            self.logger.info(f"🚢 [FLUSH] Table: {table_name} | Rows: {len(data)} | Latency: {duration:.3f}s")
+            self.logger.info(f"🚢 [FLUSH] Table: {table_name} | Rows: {len(df)} | Latency: {duration:.3f}s")
             parquet_write_duration.labels(
                 table=table_name
             ).observe(duration)
