@@ -9,6 +9,7 @@ __pycache__/
 *.log
 *.tmp
 *.backup
+*.sh
 
 #OS generated files
 .DS_store
@@ -16,8 +17,6 @@ __pycache__/
 .vscode/
 .gitignore
 .noindex
-.yml
-.sql
 
 clickhouse_data/
 clickhouse_logs/

@@ -1,11 +1,11 @@
-# --- 基础架构与配置 ---
+# --- Infrastructure and Configuration ---
 pydantic
 pydantic-settings
 pyyaml
 python-dotenv
 loguru
 
-# --- 交易所与网络 ---
+# --- Exchanges and Networks ---
 ccxt
 requests
 fastapi
@@ -13,7 +13,7 @@ uvicorn[standard]
 prometheus_client
 prometheus-fastapi-instrumentator
 
-# --- 数据科学与高性能计算 (QR 的核心) ---
+# --- Data Science and High-Performance Computing (The Core of QR) ---
 pandas
 polars
 pyarrow
@@ -21,15 +21,15 @@ numpy
 numba
 scipy
 
-# --- 统计与机器学习 ---
+# --- Statistics and Machine Learning ---
 scikit-learn
 statsmodels
 
-# --- 可视化 ---
+# --- Visualization ---
 matplotlib
 plotly
 
-# --- 数据库 (备选) ---
+# --- database ---
 # sqlalchemy
 # aiosqlite
 redis
