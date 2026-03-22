@@ -11,12 +11,13 @@ class SyncDB:
     def __init__(self):
         self.local_client = None
         self.remote_client = None
-        self.logger = setup_logger(f"collector.ws.okx",log_file=f"logs/collector/collector_okx.log")
+        # Updated log path and logger name to English
+        self.logger = setup_logger(f"collector.ws.okx", log_file=f"logs/collector/collector_okx.log")
 
     def _connect_ch_db(self):
-        """带有异常捕获的重连机制"""
+        """Reconnection mechanism with exception handling"""
         try:
-            # 建立本地连接
+            # Establish local connection
             self.local_client = clickhouse_connect.get_client(
                 host=os.getenv('CLICKHOUSE_HOST'),
                 port=os.getenv('CLICKHOUSE_PORT'),
@@ -24,7 +25,7 @@ class SyncDB:
                 password=os.getenv('CLICKHOUSE_PASSWORD'),
                 database=os.getenv('CLICKHOUSE_DB')
             )
-            # 建立香港远程连接
+            # Establish remote connection (Hong Kong)
             self.remote_client = clickhouse_connect.get_client(
                 host=os.getenv('HK_HOST'),
                 port=os.getenv('CLICKHOUSE_PORT'),
@@ -34,7 +35,7 @@ class SyncDB:
             )
             return True
         except Exception as e:
-            self.logger.error(f"🚨 连接初始化失败: {e}")
+            self.logger.error(f"🚨 Connection initialization failed: {e}")
             return False
 
     def get_hk_db(self, table):
@@ -43,7 +44,7 @@ class SyncDB:
         elif table == 'trades':
             max_target, cols = 'trade_id', "trade_id,trade_id_raw,symbol,exchange_id,mkt_type,price,amount,side,is_taker_buyer,timestamp,local_timestamp"
 
-        # 每次进入表同步前确保连接正常
+        # Ensure connections are active before starting table sync
         if not self._connect_ch_db():
             return
 
@@ -57,7 +58,7 @@ class SyncDB:
         try:
             local_result = self.local_client.query(sql)
         except Exception as e:
-            self.logger.error(f"❌ 本地查询任务清单失败: {e}")
+            self.logger.error(f"❌ Failed to query local task list: {e}")
             return
         
         if local_result.result_rows:
@@ -76,45 +77,45 @@ class SyncDB:
                         remote_result = self.remote_client.query_arrow(remote_sql)
 
                         if remote_result.num_rows == 0:
-                            self.logger.info(f"🏁 {exchange_id} {symbol} {table} 已达到实时位置。")
+                            self.logger.info(f"🏁 {exchange_id} {symbol} {table} is now up to date.")
                             break
                         
-                        self.local_client.insert_arrow(table,remote_result)
+                        self.local_client.insert_arrow(table, remote_result)
                         new_local_id = int(remote_result.column(0)[-1].as_py())
                         
                         if new_local_id <= local_id:
                             break
                                 
                         local_id = new_local_id
-                        self.logger.info(f"🚀 {symbol} 搬运中... 进度: {local_id} | 规模: {remote_result.num_rows}")
+                        self.logger.info(f"🚀 {symbol} Syncing... Progress: {local_id} | Batch Size: {remote_result.num_rows}")
                         
                     except (DatabaseError, Exception) as e:
-                        self.logger.warning(f"⚠️ 遇到网络抖动: {e}，休息30秒后重连...")
+                        self.logger.warning(f"⚠️ Network jitter detected: {e}. Retrying in 30s...")
                         time.sleep(30)
                         self._connect_ch_db()
                         continue
 
     def run_forever(self):
-        """永动机主循环"""
-        print("💡 量化数据同步永动机已启动...")
+        """Main infinite loop for synchronization"""
+        print("💡 Quant Data Sync Engine started...")
         while True:
             try:
                 start_time = time.time()
                 
-                # 依次同步两张表
+                # Sync tables sequentially
                 for table in ['trades', 'orderbook']:
                     self.get_hk_db(table)
                 
                 duration = time.time() - start_time
-                wait_time = 60  # 每轮跑完休息 1 分钟，避免高频请求被防火墙拉黑
-                print(f"☕ 本轮同步耗时 {duration:.2f}s，{wait_time}s 后开始下一轮巡检...")
+                wait_time = 60  # 1-minute cooldown to prevent firewall rate-limiting
+                print(f"☕ Round completed in {duration:.2f}s. Next inspection in {wait_time}s...")
                 time.sleep(wait_time)
                 
             except KeyboardInterrupt:
-                self.logger.info("🛑 CEO 手动停止了永动机。")
+                self.logger.info("🛑 Engine stopped manually by user.")
                 break
             except Exception as e:
-                self.logger.error(f"🔥 顶层意外崩溃: {e}，5分钟后尝试总重启...")
+                self.logger.error(f"🔥 Critical crash: {e}. Attempting full restart in 5 minutes...")
                 time.sleep(300)
 
 if __name__ == '__main__':

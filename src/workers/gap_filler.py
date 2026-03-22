@@ -85,7 +85,6 @@ class GapFiller:
         except Exception as e:
             self.logger.error(f"❌ [JOB-FAILED] Error during backfill: {e}")
         finally:
-            # --- 关键解锁逻辑 ---
             if job_id:
                 lock_key = "lock:gap_jobs_active"
                 await self.redis.srem(lock_key, job_id)
@@ -147,8 +146,7 @@ class GapFiller:
                             'price': float(trade['price']),
                             'amount': float(trade['qty']),
                             'cost': float(trade['quoteQty']),
-                            'is_taker_buyer': False if trade['isBuyerMaker'] else True,
-                            'info': trade # 原始数据存入 info
+                            'is_taker_buyer': False if trade['isBuyerMaker'] else True
                         }
                     elif exchange_id == 'okx':
                         ccxt_format = {
@@ -161,8 +159,7 @@ class GapFiller:
                             'price': float(trade['price']),
                             'amount': float(trade['amount']),
                             'cost': float(trade['cost']),
-                            'is_taker_buyer': False if trade['side'] == 'sell' else True,
-                            'info': trade['info'] # 原始数据存入 info
+                            'is_taker_buyer': False if trade['side'] == 'sell' else True
                         }
 
                     # Re-inject missing data into the main processing pipeline

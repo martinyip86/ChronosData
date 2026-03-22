@@ -128,7 +128,7 @@ class DBsyncer():
                 await asyncio.to_thread(
                     push_to_gateway,
                     'http://pushgateway:9091',
-                    job="market_db_syncer",  # 同步器作为另一个 job
+                    job="market_db_syncer",
                     registry=REGISTRY
                 )
             except: pass

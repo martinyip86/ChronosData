@@ -1,16 +1,16 @@
-from abc import ABC,abstractmethod
+from abc import ABC, abstractmethod
 import asyncio
 import random
 from src.utils.logger import setup_logger
 
 class BaseStream(ABC):
-    def __init__(self,exchange_id,symbol,ch_client,redis_client,dtype):
+    def __init__(self, exchange_id, symbol, ch_client, redis_client, dtype):
         self.exchange_id = exchange_id
         self.symbol = symbol
         self.redis = redis_client
         self.ch_client = ch_client
         self.dtype = dtype
-        self.logger = setup_logger(f"collector.ws.{exchange_id}",log_file=f"logs/collector/collector_{exchange_id}.log")
+        self.logger = setup_logger(f"collector.ws.{exchange_id}", log_file=f"logs/collector/collector_{exchange_id}.log")
         self.is_running = False
         self._stop_event = asyncio.Event()
         self.first_message_received = False
@@ -26,7 +26,7 @@ class BaseStream(ABC):
         Implements the Binance WebSocket connection and subscription logic.
         Uses a resilient connection strategy with automated heartbeats.
         """
-        raise NotImplementedError("You must implement the connect() method to connect to exchenge")
+        raise NotImplementedError("You must implement the connect() method to connect to the exchange")
     
     # @abstractmethod
     # async def parse_trade(self):
@@ -34,21 +34,22 @@ class BaseStream(ABC):
 
     async def run(self):
         self.is_running = True
-        print(f"🚀 [SYSTEM] {self.exchange_id} 启动: {self.symbol}")
+        print(f"🚀 [SYSTEM] {self.exchange_id} Started: {self.symbol}")
         while not self._stop_event.is_set():
+            # Randomized jitter to prevent thundering herd effect on reconnection
             wait_time = random.uniform(1, 10)
             await asyncio.sleep(wait_time)
             try:
                 await self.connect()
             except Exception as e:
-                if self._stop_event.is_set(): break
-                self.logger.error(f"🚨 [ERROR] {self.exchange_id} 连接异常: {e}")
-                self.logger.info(f"🔄 [RETRY] 60秒后尝试重连...")
+                if self._stop_event.is_set(): 
+                    break
+                self.logger.error(f"🚨 [ERROR] {self.exchange_id} Connection exception: {e}")
+                self.logger.info(f"🔄 [RETRY] Attempting reconnection in 60 seconds...")
                 await asyncio.sleep(60)
         
-        self.logger.info(f"🏁 [EXIT] {self.exchange_id} 已停止。")
+        self.logger.info(f"🏁 [EXIT] {self.exchange_id} has stopped.")
 
-    
     def stop(self):
         self._stop_event.set()
-        self.logger.info(f"Shopping {self.exchange_id}: {self.symbol} collector......")
+        self.logger.info(f"Stopping {self.exchange_id}: {self.symbol} collector...")
