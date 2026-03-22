@@ -4,13 +4,8 @@ from datetime import datetime,timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-# 【关键点 1】让 Airflow 容器能找到你的 src 模块
-# 因为在 docker-compose 中我们将 ../../src 映射到了 /opt/airflow/src
 sys.path.insert(0,'/opt/airflow')
 
-# 现在可以安全地 import 你的业务逻辑了
-# 假设你把原来的 main 改名为了 run_patch_logic
-# from src.workers.worker_patcher import main as run_patch_logic
 from src.workers.daily_patcher import patcher as run_patch_logic
 from src.workers.archiver import archiver as run_archive_logic
 from src.workers.consolidator import consolidator as run_consolidator_logic
