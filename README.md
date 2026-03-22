@@ -1,11 +1,11 @@
-# 🚀 Hydra-Feed:Resilient Crypto Market Data Infrastructure
+# 🚀 ChronosData: High-Performance Market Data Pipeline
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docker Support](https://img.shields.io/badge/Docker-Supported-blue)](https://www.docker.com/)
 
-**Hydra-Feed** is a high-performance, highly reliable pipeline for accessing real-time cryptocurrency market data.
-Designed specifically for quantitative trading, it resolves the critical issue of data gaps caused by WebSocket disconnections, ensuring **100% integrity** of backtesting data.
+A robust, asynchronous ETL framework for syncing real-time crypto market data (OKX/Binance) to ClickHouse.
+Built for stability, low-latency, and seamless backtesting integration.
 
 ## 🏛 Architecture
 
