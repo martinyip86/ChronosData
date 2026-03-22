@@ -15,5 +15,6 @@ CREATE TABLE IF NOT EXISTS market_data.trades_pro (
 )
 ENGINE = ReplacingMergeTree(local_timestamp)
 PARTITION BY toYYYYMMDD(fromUnixTimestamp64Milli(local_timestamp))
-ORDER BY (exchange_id,symbol,mkt_type,trade_id)
+ORDER BY (exchange_id,symbol,mkt_type,timestamp,trade_id)
+TTL fromUnixTimestamp64Milli(local_timestamp) + INTERVAL 7 DAY
 SETTINGS index_granularity=8192,index_granularity_bytes=10485760

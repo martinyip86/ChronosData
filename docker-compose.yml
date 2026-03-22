@@ -1,20 +1,16 @@
 services:
-  # 这里的 collector 是你的服务名称
   collector-binance:
-    build: .                # 告诉它去当前目录找 Dockerfile 构建镜像
+    build: . 
     container_name: collector-binance
-    restart: always         # 关键：程序崩溃或交易所断线导致退出时，自动重启
+    restart: always    
 
-    # 环境变量管理
     env_file:
-      - .env                # 自动加载你的 API Key 等敏感信息
+      - .env
 
-    # 数据持久化（非常重要！）
     volumes:
-      - ./data:/app/data    # 把容器内的 /app/data 映射到你电脑的 ./data 文件夹
-      - ./logs:/app/logs    # 映射日志，方便排查
+      - ./data:/app/data
+      - ./logs:/app/logs
       - ./src:/app/src
-      # - ./main.py:/app/main.py
     
     environment:
       - PYTHONPATH=/app
@@ -22,7 +18,6 @@ services:
 
     command: python /app/src/collectors/stream_manager.py --exchange binance
 
-    # 资源限制（防止 Polars 瞬间吃光服务器内存）
     deploy:
       resources:
         limits:
@@ -37,20 +32,17 @@ services:
         condition: service_healthy
 
   collector-okx:
-    build: .                # 告诉它去当前目录找 Dockerfile 构建镜像
+    build: .               
     container_name: collector-okx
-    restart: always         # 关键：程序崩溃或交易所断线导致退出时，自动重启
+    restart: always        
 
-    # 环境变量管理
     env_file:
-      - .env                # 自动加载你的 API Key 等敏感信息
+      - .env
 
-    # 数据持久化（非常重要！）
     volumes:
-      - ./data:/app/data    # 把容器内的 /app/data 映射到你电脑的 ./data 文件夹
-      - ./logs:/app/logs    # 映射日志，方便排查
+      - ./data:/app/data    
+      - ./logs:/app/logs    
       - ./src:/app/src
-      # - ./main.py:/app/main.py
     
     environment:
       - PYTHONPATH=/app
@@ -64,7 +56,6 @@ services:
               python /app/src/collectors/stream_manager.py --exchange okx
             fi"
 
-    # 资源限制（防止 Polars 瞬间吃光服务器内存）
     deploy:
       resources:
         limits:
@@ -168,6 +159,28 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+
+  ofelia:
+    image: mcuadros/ofelia:latest
+    container_name: quant_ofelia
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: daemon --docker
+
+  daily_patcher:
+    build: .
+    container_name: quant_daily_patcher
+    command: tail -f /dev/null
+    volumes:
+      - .:/app:cached
+    environment:
+      - PYTHONPATH=/app
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.daily_full_sync.schedule: "0 0 9 * * *"
+      ofelia.job-exec.daily_full_sync.command: "python -m src.pipeline_runner"
+    tty: true
+    stdin_open: true
 
   #控制组件
   prometheus:
