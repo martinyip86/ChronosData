@@ -211,11 +211,18 @@ services:
   quant_redis:
     image: redis:alpine
     container_name: quant_redis_service
+    env_file:
+      - .env
     ports:
-      - "6380:6379"
-    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+      - "6379:6379"
+    command: >
+      redis-server
+      --bind 0.0.0.0
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 2gb 
+      --maxmemory-policy allkeys-lru
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD} ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5

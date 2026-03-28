@@ -1,4 +1,8 @@
 import redis.asyncio as redis
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class RedisManager:
     """
@@ -7,24 +11,22 @@ class RedisManager:
     and inter-process communication (IPC) with minimal latency.
     """
     def __init__(self):
-        # Local development/debug pool
-        self._local_pool = redis.ConnectionPool(
-            host='localhost',
-            port=6380,
+        # Production-grade market data pool (Connects to the 'quant_redis' container)
+        # Designed for high-frequency Rpush/Lpop operations.
+        raw_host = os.getenv('REDIS_HOST', '127.0.0.1')
+        host = '127.0.0.1' if raw_host == 'quant_redis' and not self._is_in_docker() else raw_host
+
+        self._market_pool = redis.ConnectionPool(
+            host=host,
+            port=os.getenv('REDIS_PORT'),
+            password=os.getenv('REDIS_PASSWORD'),
             db=0,
             decode_responses=True,
             max_connections=20
         )
 
-        # Production-grade market data pool (Connects to the 'quant_redis' container)
-        # Designed for high-frequency Rpush/Lpop operations.
-        self._market_pool = redis.ConnectionPool(
-            host='quant_redis',
-            port=6379,
-            db=0,
-            decode_responses=True,
-            max_connections=20
-        )
+    def _is_in_docker(self):
+        return os.path.exists('/.dockerenv')
 
     @property
     def market_db(self):
@@ -33,13 +35,6 @@ class RedisManager:
         Acts as the primary data bus for Tick and Trade streams.
         """
         return redis.Redis(connection_pool=self._market_pool)
-    
-    @property
-    def local_db(self):
-        """
-        Returns an async Redis client for local caching or testing.
-        """
-        return redis.Redis(connection_pool=self._local_pool)
 
 # Global singleton instance for centralized connection management
 redis_manager = RedisManager()
