@@ -20,58 +20,108 @@ class DBsyncer():
         self.redis = redis_manager.market_db
         self.ch = ch_manager.market_db
         self.logger = setup_logger("worker.syncer",log_file="logs/syncer/syncer.log")
+        self.active_streams = {
+            'orderbook':{},
+            'trades':{}
+        }
 
         self.config = {
             'orderbook':{
-                'redis_key':'market:ticks:all',
+                # 'redis_key':'market:ticks:all',
+                'redis_key':'stream:market:ticks',
                 'table':'orderbook',
                 'batch_size':10000,
                 'flush_interval':10.0
             },
             'trades':{
-                'redis_key':'market:trades:all',
+                # 'redis_key':'market:trades:all',
+                'redis_key':'stream:market:trades',
                 'table':'trades',
                 'batch_size':10000,
                 'flush_interval':10.0
             }
         }
 
+    async def update_subscriptions(self,dtype):
+        registry_key = f"registry:streams:{'orderbook' if dtype=='orderbook' else 'trades'}"
+        while True:
+            try:
+                remote_keys = await self.redis.smembers(registry_key)
+                for rkey in remote_keys:
+                    rkey = rkey.decode() if isinstance(rkey,bytes) else rkey
+                    if rkey not in self.active_streams[dtype]:
+                        self.logger.info(f"🆕 [NEW-SYMBOL] Found new stream: {rkey}")
+                        self.active_streams[dtype][rkey] = '0'
+
+                await asyncio.sleep(30)
+            except Exception as e:
+                self.logger.error(f"❌ [REGISTRY-ERROR] {e}")
+                asyncio.sleep(5)
 
     async def storage_worker(self,dtype):
         """
         Main worker loop for a specific data type (trades or orderbook).
         """
+        asyncio.create_task(self.update_subscriptions(dtype))
+
         conf = self.config[dtype]
-        redis_key = conf['redis_key']
+        registry_key = f"registry:streams:{'orderbook' if dtype=='orderbook' else 'trades'}"
+        # redis_key = conf['redis_key']
         table = conf['table']
         batch_size = conf['batch_size']
         flush_interval = conf['flush_interval']
         buffer = []
         last_flush = time.time()
 
-        self.logger.info(f"✅ [WORKER-START] Syncer active for {dtype}. Listening on: {redis_key}")
+        self.logger.info(f"✅ [WORKER-START] Syncer active for {dtype}. Listening on: {registry_key}")
 
         while True:
+            if not self.active_streams[dtype]:
+                await asyncio.sleep(1)
+                continue
+
             try:
                 # Monitor Redis queue depth for Prometheus metrics
-                q_len = await self.redis.llen(redis_key)
+                # q_len = await self.redis.llen(redis_key)
+                total_pedding = 0
+                for s_keys in list(self.active_streams[dtype].keys()):
+                    q_len = await self.redis.xlen(s_keys)
+                    queue_size_gauge.labels(
+                        redis_key=s_keys
+                    ).set(q_len)
+
+                    total_pedding += q_len
+
                 queue_size_gauge.labels(
-                    redis_key=redis_key
-                ).set(q_len)
+                    redis_key=f"total_{dtype}"
+                ).set(total_pedding)
 
                 # Batch POP from Redis to minimize IO roundtrips
-                data_list = await self.redis.execute_command('LPOP',redis_key,batch_size)
+                # data_list = await self.redis.execute_command('LPOP',redis_key,batch_size)
 
-                if data_list:
-                    for item in data_list:
-                        clear_item = json.loads(item)
-                        # Deserialize JSON objects
-                        buffer.append(clear_item)
-                else:
-                    # Adaptive polling: sleep if queue is empty
-                    await asyncio.sleep(0.5)
-                    continue
-                    # Check for time-based flush even if no new data arrived
+                # if data_list:
+                #     for item in data_list:
+                #         clear_item = json.loads(item)
+                #         # Deserialize JSON objects
+                #         buffer.append(clear_item)
+                # else:
+                #     # Adaptive polling: sleep if queue is empty
+                #     await asyncio.sleep(0.5)
+                #     continue
+                #     # Check for time-based flush even if no new data arrived
+
+                response = await self.redis.xread(
+                    self.active_streams[dtype],
+                    count=batch_size,
+                    block=500
+                )
+
+                if response:
+                    for stream_key,messages in response:
+                        stream_key = stream_key.decode() if isinstance(stream_key,bytes) else stream_key
+                        for msg_id,content in messages:
+                            buffer.append(json.loads(content['data']))
+                            self.active_streams[dtype][stream_key] = msg_id
 
                 now = time.time()
                 # Trigger Flush Condition: Buffer is full OR Time limit exceeded
@@ -80,8 +130,11 @@ class DBsyncer():
                     buffer.clear()
                     last_flush = time.time()
 
+                if not response:
+                    await asyncio.sleep(0.1)
+
             except Exception as e:
-                print(f"❌ [INGESTION-ERROR] Failed to fetch from Redis: {e}")
+                self.logger.error(f"❌ [INGESTION-ERROR] Failed to fetch from Redis: {e}")
                 await asyncio.sleep(1) # Backoff on error
 
     async def _flush(self,data,table_name):

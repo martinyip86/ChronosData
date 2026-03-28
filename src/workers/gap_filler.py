@@ -100,6 +100,10 @@ class GapFiller:
         current_from_id = start_id
         total_patched = 0
 
+        symbol_key = symbol.replace('/','-')
+        stream_key = f"md:{exchange_id}:spot:{symbol_key}:trades"
+        registry_key = f"registry:streams:trades"
+
         client = self.clients[exchange_id]
 
         while current_from_id <= end_id:
@@ -125,49 +129,57 @@ class GapFiller:
                 if not trades:
                     break
 
-                for trade in trades:
-                    trade_id = int(trade['id'])
+                await self.redis.sadd(registry_key,stream_key)
 
-                    # Ensure we don't overshoot the gap end_id
-                    if trade_id > end_id:
-                        current_from_id = end_id + 1
-                        break
-                    
-                    # Normalize raw response to internal Schema-compliant format
-                    if exchange_id == 'binance':
-                        # isBuyerMaker: True means Sell side for Taker
-                        ccxt_format = {
-                            'symbol': symbol,
-                            'exchange_id': exchange_id,
-                            'mkt_type': 'spot',
-                            'id': str(trade['id']),
-                            'timestamp': int(trade['time']),
-                            'side': 'sell' if trade['isBuyerMaker'] else 'buy',
-                            'price': float(trade['price']),
-                            'amount': float(trade['qty']),
-                            'cost': float(trade['quoteQty']),
-                            'is_taker_buyer': False if trade['isBuyerMaker'] else True
-                        }
-                    elif exchange_id == 'okx':
-                        ccxt_format = {
-                            'symbol': symbol,
-                            'exchange_id': exchange_id,
-                            'mkt_type': 'spot',
-                            'id': str(trade['id']),
-                            'timestamp': int(trade['timestamp']),
-                            'side': trade['side'],
-                            'price': float(trade['price']),
-                            'amount': float(trade['amount']),
-                            'cost': float(trade['cost']),
-                            'is_taker_buyer': False if trade['side'] == 'sell' else True
-                        }
+                async with self.redis.pipeline(transaction=False) as pipe:
+                    for trade in trades:
+                        trade_id = int(trade['id'])
 
-                    # Re-inject missing data into the main processing pipeline
-                    trade_obj = TradeData.from_ccxt(ccxt_format, exchange_id)
-                    await self.redis.rpush('market:trades:all',trade_obj.model_dump_json())
+                        # Ensure we don't overshoot the gap end_id
+                        if trade_id > end_id:
+                            current_from_id = end_id + 1
+                            break
+                        
+                        # Normalize raw response to internal Schema-compliant format
+                        if exchange_id == 'binance':
+                            # isBuyerMaker: True means Sell side for Taker
+                            ccxt_format = {
+                                'symbol': symbol,
+                                'exchange_id': exchange_id,
+                                'mkt_type': 'spot',
+                                'id': str(trade['id']),
+                                'timestamp': int(trade['time']),
+                                'side': 'sell' if trade['isBuyerMaker'] else 'buy',
+                                'price': float(trade['price']),
+                                'amount': float(trade['qty']),
+                                'cost': float(trade['quoteQty']),
+                                'is_taker_buyer': False if trade['isBuyerMaker'] else True
+                            }
+                        elif exchange_id == 'okx':
+                            ccxt_format = {
+                                'symbol': symbol,
+                                'exchange_id': exchange_id,
+                                'mkt_type': 'spot',
+                                'id': str(trade['id']),
+                                'timestamp': int(trade['timestamp']),
+                                'side': trade['side'],
+                                'price': float(trade['price']),
+                                'amount': float(trade['amount']),
+                                'cost': float(trade['cost']),
+                                'is_taker_buyer': False if trade['side'] == 'sell' else True
+                            }
 
-                    current_from_id = trade_id + 1
-                    total_patched += 1
+                        # Re-inject missing data into the main processing pipeline
+                        trade_obj = TradeData.from_ccxt(ccxt_format, exchange_id)
+                        # await self.redis.rpush('market:trades:all',trade_obj.model_dump_json())
+                        await pipe.xadd(
+                            stream_key,
+                            {'data':trade_obj.model_dump_json()},
+                            maxlen=10000,
+                            approximate=True
+                        )
+                        current_from_id = trade_id + 1
+                        total_patched += 1
 
                 self.logger.info(f"✅ [BACKFILL-SYNC] {exchange_id}-{symbol} | Progress: {total_patched} trades recovered.")
 

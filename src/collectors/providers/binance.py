@@ -61,6 +61,10 @@ class BinanceStream(BaseStream):
         Ingests real-time L2 Orderbook data (Top 20 bids/asks).
         Includes silence detection to trigger reconnections during data stalls.
         """
+        symbol_key = self.symbol.replace('/','-')
+        stream_key = f"md:{self.exchange_id}:{self.mkt_type}:{symbol_key}:tick"
+        registry_key = f"registry:streams:{self.dtype}"
+
         last_active_time = time.time()
 
         while not self._stop_event.is_set():
@@ -112,7 +116,15 @@ class BinanceStream(BaseStream):
                 )
 
                 # Push to Redis for downstream processing by Syncer/DB workers
-                await self.redis.rpush("market:ticks:all",tick.model_dump_json())
+                # await self.redis.rpush("market:ticks:all",tick.model_dump_json())
+                await self.redis.xadd(
+                    stream_key,
+                    {'data':tick.model_dump_json()},
+                    maxlen=10000,
+                    approximate=True
+                )
+
+                await self.redis.sadd(registry_key,stream_key)
             except asyncio.TimeoutError:
                 self.first_message_received = False
                 self.logger.warning(f"{self.exchange_id}:{self.symbol}:orderbook_ws timeout,reconnecting...")
@@ -166,6 +178,10 @@ class BinanceStream(BaseStream):
         Ingests real-time Trade data with intelligent Gap Detection.
         Synchronizes sequence state with Redis to ensure data integrity.
         """
+
+        symbol_key = self.symbol.replace('/','-')
+        stream_key = f"md:{self.exchange_id}:{self.mkt_type}:{symbol_key}:trades"
+        registry_key = f"registry:streams:{self.dtype}"
 
         redis_hex_trade_id_key = f"cache:{self.exchange_id}:last_trade_id"
 
@@ -242,9 +258,18 @@ class BinanceStream(BaseStream):
 
                     batch_data.append(trade.model_dump_json())
 
+                await self.redis.sadd(registry_key,stream_key)
+
                 if batch_data:
                     # Atomic storage update: push trades and update the 'Source of Truth' sequence ID
-                    await self.redis.rpush(f"market:trades:all",*batch_data)
+                    # await self.redis.rpush(f"market:trades:all",*batch_data)
+                    for trade_json in batch_data:
+                        await self.redis.xadd(
+                            stream_key,
+                            {'data':trade_json},
+                            maxlen=10000,
+                            approximate=True
+                        )
                     await self.redis.hset(redis_hex_trade_id_key, self.symbol, max_curr_id)
                     await self.redis.set(self.last_trade_id_key,max_curr_id)
 

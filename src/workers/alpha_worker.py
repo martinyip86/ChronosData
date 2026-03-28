@@ -13,10 +13,16 @@ async def run_alpha_generation(exchange_id='binance',mkt_type='spot',symbol='BTC
     print(f"starting generate real-time for {symbol} signal")
 
     buffer = []
-    data_list = await redis_client.lrange('market:ticks:all',0,200)
+    raw_data = await redis_client.xrevrange('md:binance:spot:BTC-USDT:tick',count=300)
 
-    for dict in data_list:
-        buffer.append(json.loads(dict))
+    for msg_id, content in raw_data:
+        # content 是一个字典，键是你 xadd 时定义的 'data'
+        tick_json = content.get(b'data') or content.get('data')
+        tick_dict = json.loads(tick_json)
+        
+        # 过滤出当前 symbol 的数据
+        if tick_dict.get('symbol') == symbol:
+            buffer.append(tick_dict)
 
     df = pl.DataFrame(buffer)
 
@@ -25,8 +31,6 @@ async def run_alpha_generation(exchange_id='binance',mkt_type='spot',symbol='BTC
     ]).filter(pl.col('symbol')==symbol).select(['bid_prices','bid_volumes','ask_prices','ask_volumes','timestamp','symbol','mid_price'])
 
     result_df = model.generate_signal(df)
-
-    print(result_df)
 
     latest_signal = result_df.tail(1)
     score = latest_signal['combined_alpha'][0]
