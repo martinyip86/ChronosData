@@ -18,10 +18,10 @@ silence_gauge = Gauge(
     ["exchange","symbol","type"]
 )
 
-queue_size_gauge = Gauge(
-    "collector_queue_size",
-    "Collector Queue Size",
-    ["redis_key"]
+sync_lag_gauge = Gauge(
+    "sync_backlog_count", 
+    "Unprocessed messages in Redis", 
+    ["data_type"]
 )
 
 parquet_write_duration = Histogram(
@@ -46,4 +46,10 @@ quant_patch_hearbeat = Gauge(
     "quant_patch_hearbeat",
     "Timestamp of last monitor run",
     ["exchange","symbol"]
+)
+
+redis_mem_gauge = Gauge(
+    "redis_memory_gauge",
+    "Redis memory monitor",
+    ["type"]
 )

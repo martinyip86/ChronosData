@@ -196,6 +196,13 @@ services:
     ports:
       - "9091:9091"
 
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+
   grafana:
     image: grafana/grafana:latest
     ports:

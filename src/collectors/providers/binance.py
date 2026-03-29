@@ -27,7 +27,13 @@ class BinanceStream(BaseStream):
         """Initializes the exchange client using ccxt.pro."""
         config = {
             'enableRateLimit':True,
-            'options':{'defaultType':self.mkt_type}
+            'options':{
+                'defaultType':self.mkt_type,
+                'watchOrderBook':{'maxRetries':5},
+                'ws':{
+                    'heartbeat':30000,
+                }
+            }
         }
         if self.exchange_id == 'binance':
             return ccxt_pro.binance(config)
@@ -39,21 +45,32 @@ class BinanceStream(BaseStream):
         Entry point for the connection lifecycle. 
         Manages high-level dispatching to specific stream handlers.
         """
-        if self.client:
-            await self.client.close()
+        while not self._stop_event.is_set():
+            if self.client:
+                await self.client.close()
 
-        self.client = self._create_client()
-        self.first_message_received = False
+            self.client = self._create_client()
+            self.first_message_received = False
 
-        try:
-            if self.dtype == 'orderbook':
-                await self._watch_orderbook()
-            else:
-                await self._watch_trade()
-        finally:
-            await self.client.close()
-            del self.client
-            self.client = None
+            try:
+                if self.dtype == 'orderbook':
+                    await self._watch_orderbook()
+                else:
+                    await self._watch_trade()
+
+            except (asyncio.TimeoutError, ConnectionError) as e:
+                # 捕获僵尸连接，不抛给外部，直接在内部快速循环重连
+                self.logger.warning(f"⚠️ [RECONNECTING] {self.symbol} due to: {e}")
+                await asyncio.sleep(2) # 快速闪断重连等待
+                continue
+            except Exception as e:
+                # 严重错误则抛给 BaseStream 处理 (进入 60s 冷却)
+                self.logger.error(f"🚨 [FATAL] {self.exchange_id} loop crashed: {e}")
+                raise e
+            finally:
+                await self.client.close()
+                del self.client
+                self.client = None
 
 
     async def _watch_orderbook(self):
@@ -144,6 +161,8 @@ class BinanceStream(BaseStream):
 
                 if silence_duration > 60:
                     raise ConnectionError(f"Zombie connection detected for {self.exchange_id}-{self.symbol}")
+
+                continue
                     
             except Exception as e:
                 self.logger.error(f"🚨 [OB-ERROR] Exception in Orderbook loop: {e}")
@@ -151,7 +170,7 @@ class BinanceStream(BaseStream):
                     exchange=self.exchange_id,
                     symbol=self.symbol
                 ).inc()
-                raise e
+                continue
 
     async def _get_last_trade_id(self):
         try:
@@ -293,11 +312,13 @@ class BinanceStream(BaseStream):
                 if silence_duration > 60:
                     raise ConnectionError(f"Zombie connection detected for {self.exchange_id}-{self.symbol}")
 
+                continue
+
             except Exception as e:
                 self.logger.error(f"🚨 [TD-ERROR] Exception in Trade loop: {e}")
                 ws_error_total.labels(
                     exchange=self.exchange_id,
                     symbol=self.symbol
                 ).inc()
-                raise e
+                continue
             
